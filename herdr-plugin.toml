@@ -1,6 +1,6 @@
 id = "local.status-overlay"
 name = "Status Overlay"
-version = "0.1.0"
+version = "1.0.0"
 min_herdr_version = "0.9.5"
 description = "Native macOS panel with agent statuses read from the Herdr API."
 platforms = ["macos"]

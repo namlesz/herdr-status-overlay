@@ -196,14 +196,14 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func rowView(_ row: RowView, stale: Bool) -> NSView {
         let icon = statusIcon(row.status, size: 14, color: stale ? .secondaryLabelColor : statusColor(row.status))
         let name = label(row.label, size: 14, bold: true, secondary: stale)
-        let place = label(row.place ?? row.workspace, size: 14, secondary: true)
+        let place = label(row.place ?? "—", size: 14, secondary: true)
         place.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let line = NSStackView(views: [icon, name, place, NSView()])
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 6
         let details = ClickableRow(views: [line])
-        details.toolTip = "\(row.label) · \(row.place ?? row.workspace) — \(statusName(row.status)). Click to open."
+        details.toolTip = "\(row.label) · \(row.place ?? "—") — \(statusName(row.status)). Click to open."
         details.onClick = { [weak self] in self?.onSelect?(row) }
         details.orientation = .vertical
         details.alignment = .leading

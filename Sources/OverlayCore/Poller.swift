@@ -140,7 +140,7 @@ public final class SourcePoller {
     private func cycle() {
         guard !isStopped else { return }
         let generation = model.begin(source.id)
-        let outcome = read(source.arguments)
+        let outcome = read(source.listArguments)
         guard !isStopped else { return }
         failures = model.finish(source.id, generation: generation, outcome: outcome) ? 0 : failures + 1
         let delay = Self.delay(afterFailures: failures, interval: source.interval, backoff: backoff)

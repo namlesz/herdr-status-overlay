@@ -48,7 +48,7 @@ do {
     check(records[0].completionSeq == 135, "reads completion_seq")
     check(records[1].label == "claude", "falls back to agent type")
     check(records[1].key.terminalID == nil, "terminal_id is optional")
-    check(records[0].workspace == "w1", "workspace falls back to public id")
+    check(records[0].place == "private", "place is final cwd component")
 
     var titled = agent("w1:p5", "working", name: "  Bob\u{0007}x  ")
     titled["agent"] = " "
@@ -196,7 +196,7 @@ do {
     check(section("local", t0 + seconds(2)).rows.map(\.key.paneID) == ["w1:p2"], "full replacement removes agents")
 
     view = section("local", t0 + seconds(9))
-    check(view.stale && view.counts == nil && view.staleAgents == 1 && view.problem == .outdated, "local stale after 6 s")
+    check(view.stale && view.counts == nil && view.rows.count == 1 && view.problem == .outdated, "local stale after 6 s")
 
     g = store.begin("machine:box")
     store.succeed("machine:box", generation: g, agents: parse([agent("w9:p1", "idle", seq: 1)]), now: t0)
@@ -210,7 +210,7 @@ do {
 
     store.expire(now: t0 + seconds(61))
     view = section("machine:box", t0 + seconds(61))
-    check(view.staleAgents == 0 && view.rows.isEmpty && view.counts == nil, "cache dropped after 60 s, section kept")
+    check(view.rows.isEmpty && view.counts == nil, "cache dropped after 60 s, section kept")
 
     var waking = Store(sources: [local])
     g = waking.begin("local")
@@ -315,8 +315,8 @@ do {
     let missing = try? MachineList.load(directory: URL(fileURLWithPath: "/nonexistent-\(getpid())"))
     check(missing == MachineList.Parsed(), "missing file means local only")
     let source = SourceConfig.machine("box", executable: "/x/herdr")
-    check(source.arguments == ["/x/herdr", "--machine", "box", "agent", "list"], "remote argv without shell")
-    check(SourceConfig.local(executable: "/x/herdr").arguments == ["/x/herdr", "agent", "list"], "local argv")
+    check(source.listArguments == ["/x/herdr", "--machine", "box", "agent", "list"], "remote argv without shell")
+    check(SourceConfig.local(executable: "/x/herdr").listArguments == ["/x/herdr", "agent", "list"], "local argv")
     check(source.focusArguments(paneID: "p1") == ["/x/herdr", "--machine", "box", "agent", "focus", "p1"],
           "remote focus argv")
     check(SourceConfig.local(executable: "/x/herdr").focusArguments(paneID: "p1")
@@ -411,8 +411,8 @@ do {
     check((1...4).map { SourcePoller.delay(afterFailures: $0, interval: 2, backoff: SourcePoller.backoff) }
           == [5, 10, 30, 30], "backoff 5/10/30")
 
-    let fast = SourceConfig(id: "local", label: "L", arguments: ["x"], interval: 0.01, staleAfter: seconds(6))
-    let other = SourceConfig(id: "machine:m", label: "M", arguments: ["y"], interval: 0.01, staleAfter: seconds(6))
+    let fast = SourceConfig(id: "local", label: "L", command: ["x"], interval: 0.01, staleAfter: seconds(6))
+    let other = SourceConfig(id: "machine:m", label: "M", command: ["y"], interval: 0.01, staleAfter: seconds(6))
     let model = OverlayModel(sources: [fast, other])
     let lock = NSLock()
     var active: [String: Int] = [:], peak: [String: Int] = [:], calls: [String: Int] = [:]
@@ -441,7 +441,7 @@ do {
     lock.lock()
     check(calls == settled, "stop ends polling")
     lock.unlock()
-    let longWait = SourceConfig(id: "local", label: "L", arguments: ["x"], interval: 60, staleAfter: seconds(6))
+    let longWait = SourceConfig(id: "local", label: "L", command: ["x"], interval: 60, staleAfter: seconds(6))
     let refreshed = DispatchSemaphore(value: 0)
     let resumePoller = SourcePoller(source: longWait, model: OverlayModel(sources: [longWait]), read: { _ in
         refreshed.signal()

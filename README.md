@@ -1,62 +1,52 @@
 # Herdr Status Overlay
 
-Trwały podgląd statusów agentów Herdr nad aplikacjami macOS, również w pełnoekranowych Spaces.
+Plugin Herdr (`local.status-overlay`, macOS) z natywnym pływającym panelem statusów agentów — lokalnych i z zapisanych maszyn remote. Panel pływa nad innymi aplikacjami na wszystkich Spaces, także pełnoekranowych, więc nie trzeba wracać do terminala, żeby zobaczyć, że agent skończył albo czeka.
 
-## Problem
+## Instalacja
 
-Użytkownik pracuje z lokalnymi agentami i agentami remote dostępnymi w lokalnych klientach Herdr. Terminal bywa otwarty na fullscreen w innym Space, a użytkownik pracuje np. w Safari. Powiadomienia macOS bywają spóźnione lub przeoczone; bez powrotu do terminala nie widać, że agent skończył albo czeka na odpowiedź.
-
-Overlay ma być stale dostępnym widokiem aktualnej sytuacji, a nie kolejnym znikającym powiadomieniem.
-
-## Jak to działa
-
-Plugin Herdr `local.status-overlay` (bez zmian w Herdr) ma akcję „Status overlay: start”. Akcja otwiera w tle panel pluginu (`--no-focus`), a w nim jako proces pierwszoplanowy działa natywny helper Swift/AppKit. Helper:
-
-- co 2 s czyta lokalną sesję: `$HERDR_BIN_PATH agent list` (socket z kontekstu pluginu);
-- co 5 s (licząc od końca poprzedniego odczytu) czyta każdy alias z `machines.txt`: `$HERDR_BIN_PATH --machine <alias> agent list`;
-- pokazuje jeden pływający panel szerokości 420 pt z ciemną kartą na źródło: niezerowe liczniki oraz wiersz każdego agenta: zablokowane, pracujące, zakończone, nieznane, a na końcu bezczynne. Wiersz pokazuje rodzaj agenta, katalog projektu (lub workspace) i opcjonalny tytuł aktywności; bez nagłówków trybu i przycisków;
-- po kliknięciu w dowolne miejsce wiersza agenta (także bezczynnego) wywołuje `herdr [--machine <alias>] agent focus <pane_id>`, a równocześnie aktywuje Ghostty przez LaunchServices (macOS przełącza na jego Space). Przy kilku oknach Ghostty to macOS wybiera, które wyjdzie na wierzch. Dla agenta remote focus zmienia się tylko na serwerze remote; lokalny klient Herdr nie przełącza się sam na widok tej maszyny (API nie ma takiej operacji). Błąd sygnalizuje dźwiękiem.
-
-`DONE` („skończył”) pochodzi ze statusu `done` serwera lub wykrytej zmiany `completion_seq`. Wpis znika sam po 10 minutach od wykrycia albo gdy agent znów pracuje — bez klikania i bez ack/input w Herdr (focus tylko po kliknięciu wiersza). Pierwszy odczyt (także po błędzie lub wybudzeniu) ustala punkt odniesienia dla znacznika, ale nadal pokazuje jawne `done` serwera.
-
-Dane nieaktualne: lokalne po 6 s, remote po 20 s bez udanego odczytu, a błąd lub timeout od razu. Liczniki pokazują wtedy `—`, nagłówek karty ma dopisek „stale data”, a wiersze są szare, po 60 s cache znika (sekcja zostaje). Po wybudzeniu Maca wszystkie dane są nieaktualne do następnego odczytu.
-
-Zamknięcie panelu pluginu, SIGHUP/SIGTERM lub „Quit overlay” w menu `HSO` kończy helper i jego odczyty. Agenci działają dalej.
-
-## Budowanie i testy
-
-Wymagane: macOS 13+, Swift (sprawdzono Command Line Tools ze Swift 6.4 na macOS 27, arm64). Bez zależności zewnętrznych.
+Wymagane: macOS 13+, Swift (Command Line Tools wystarczą), Herdr ≥ 0.9.5, Ghostty. Bez zależności zewnętrznych.
 
 ```sh
-swift run OverlaySelfCheck          # testy headless: fikstury i fałszywe procesy /bin/sh
-swift build -c release              # helper: .build/release/HerdrStatusOverlay
-sh -n bin/open-overlay bin/run-helper
+swift build -c release                         # helper: .build/release/HerdrStatusOverlay
+herdr plugin link /ścieżka/do/herdr-status-overlay
 ```
 
-CLT nie zawiera XCTest, dlatego testy są osobnym programem `OverlaySelfCheck` (kod wyjścia 0 = wszystko przeszło). Nie uruchamiają Herdr, SSH ani GUI.
+Maszyny remote (opcjonalnie): skopiuj `examples/machines.txt` do `$(herdr plugin config-dir local.status-overlay)/machines.txt` i wpisz aliasy zapisanych maszyn (`herdr machine list`), po jednym w wierszu, `#` to komentarz, maksymalnie 16. Brak pliku oznacza tylko sesję lokalną. Sesje otwarte wyłącznie przez `herdr --remote` nie są widoczne. Plik jest czytany przy starcie helpera.
 
-## Konfiguracja i uruchomienie (wykonuje użytkownik)
+Start: akcja „Status overlay: start” z palety Herdr albo `herdr plugin action invoke open --plugin local.status-overlay`. Akcja otwiera w tle (bez zmiany fokusu) zakładkę pluginu, w której helper działa jako proces pierwszoplanowy. Druga instancja wypisze „już działa” i się zakończy.
 
-Nic z poniższego nie jest wykonywane automatycznie.
+Stop: zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku menu albo SIGTERM. Kończy to helper i jego odczyty; agenci działają dalej. Nie ma autostartu ani auto-restartu: po restarcie lub aktualizacji serwera Herdr uruchom akcję ponownie.
 
-1. `swift build -c release` w katalogu repo.
-2. `herdr plugin link /ścieżka/do/herdr-status-overlay`.
-3. Opcjonalnie remote: `cp examples/machines.txt "$(herdr plugin config-dir local.status-overlay)/machines.txt"` i wpisz aliasy zapisanych maszyn. Brak pliku = tylko lokalna sesja. Wymagany zapisany i włączony alias; sesje otwarte wyłącznie przez `herdr --remote` nie są widoczne.
-4. W Herdr uruchom akcję „Status overlay: start” (`herdr plugin action invoke open --plugin local.status-overlay` lub paleta). Druga instancja wypisze „już działa” i się zakończy.
+## Działanie
+
+**Odczyty.** Helper wywołuje `$HERDR_BIN_PATH agent list` (sesja lokalna, 2 s po końcu poprzedniego odczytu) i `$HERDR_BIN_PATH --machine <alias> agent list` (każdy alias, 5 s po końcu poprzedniego). Na źródło działa najwyżej jeden proces naraz. Timeout wynosi 10 s, a stdout jest ograniczony do 1 MiB. Treść stderr jest odrzucana. Po błędzie kolejne próby następują co 5, 10, a potem 30 s. Proces nie ma terminala sterującego, a stdin to `/dev/null`, więc ssh nie może pytać o hasło.
+
+**Panel.** Na każde źródło jest jedna ciemna karta z niezerowymi licznikami i wierszem każdego agenta. Kolejność: zablokowane, pracujące, zakończone (`done`), nieznane, bezczynne. Wiersz pokazuje rodzaj agenta, katalog projektu (lub `workspace_id`) i opcjonalny tytuł terminala. Panel ma 420 pt szerokości i najwyżej 40% wysokości ekranu, dalej się przewija. Można go przeciągać. Pozycja i widoczność są zapisywane w `$HERDR_PLUGIN_STATE_DIR/panel.json`, a po odłączeniu monitora panel wraca na widoczny ekran. Menu `HSO` pozwala go ukryć lub pokazać. Interfejs jest po angielsku i używa JetBrains Mono, jeśli ten font jest zainstalowany.
+
+**Kliknięcie wiersza** aktywuje Ghostty (macOS przełącza na jego Space) i wywołuje `herdr [--machine <alias>] agent focus <pane_id>`. Błąd sygnalizuje dźwiękiem.
+
+**`done`.** Agent ma status `done`, gdy serwer zgłasza `done` albo gdy overlay wykryje wzrost `completion_seq`. Po 10 minutach oznaczenie przechodzi w bezczynny; gdy agent znów pracuje, od razu wraca status pracujący (zablokowany i nieznany też mają pierwszeństwo przed `done`). Pierwszy odczyt, także po błędzie lub wybudzeniu Maca, ustala punkt odniesienia `completion_seq`, więc nie tworzy fałszywych zakończeń, ale jawne `done` serwera pokazuje. Stan jest wyłącznie w pamięci.
+
+**Nieaktualne dane.** Dane lokalne stają się nieaktualne po 6 s bez udanego odczytu, remote po 20 s, a przy błędzie lub po wybudzeniu od razu. Liczniki pokazują wtedy `—`, karta ma dopisek „stale data”, a wiersze są szare. Po 60 s od ostatniego udanego odczytu lista agentów znika, ale karta zostaje z opisem problemu.
 
 ## Ograniczenia
 
-- Sekcje są per źródło (lokalna sesja / alias), nie per klient Herdr; brak globalnej sumy i deduplikacji.
-- Statusy pochodzą z serwera. `DONE` jest własną listą overlayu; restart serwera między dwoma udanymi odczytami bez zmiany `terminal_id` lub cofnięcia `completion_seq` nie jest wykrywany (API nie podaje epoki).
-- Każdy odczyt remote uruchamia `herdr --machine`, czyli proces ssh i zdalny proces herdr. Przy wygasłym połączeniu współdzielonym może powstać nowe połączenie SSH. Helper nie ma terminala sterującego, więc ssh nie może pytać o hasło; trzeba wtedy wykonać `herdr machine reconnect`.
-- Etykieta workspace to publiczne `workspace_id` (nazwy workspace nie są w odpowiedzi `agent list`).
-- GUI, plugin i odczyty live nie zostały jeszcze uruchomione: zob. [testy live do wykonania](docs/pending-live-tests.md) i [backlog](docs/backlog.md). Brak testów na macOS 13 i Intel.
+- Karty są per źródło (sesja lokalna / alias), nie per klient Herdr. Nie ma sumy ani deduplikacji agentów między źródłami.
+- API nie podaje epoki serwera. Restart serwera między dwoma udanymi odczytami jest wykrywany tylko po nowym `terminal_id` lub spadku `completion_seq`.
+- Przy kilku oknach Ghostty to macOS wybiera, które wyjdzie na wierzch. Focus agenta remote zmienia się na serwerze remote; lokalny klient Herdr nie przełącza się sam na widok tej maszyny.
+- Każdy odczyt remote to proces ssh i zdalny `herdr`. Wygasłe połączenie, którego nie da się odnowić bez hasła, widać jako „Read failed (exit N)” bez rozróżnienia przyczyny. Wtedy wykonaj `herdr machine reconnect`.
+- Etykieta miejsca to katalog roboczy albo `workspace_id`; nazw workspace nie ma w odpowiedzi `agent list`.
+- Nie testowano na macOS 13, Intel ani z VoiceOver.
 
-## Dokumenty
+## Rozwój
 
-- [Plan implementacji — aktualny zakres](docs/implementation-plan.md)
-- [Review implementacji i wykonane kontrole](docs/reviews/plugin-implementation-review.md)
-- [Backlog](docs/backlog.md) i [testy live do wykonania](docs/pending-live-tests.md)
-- [Specyfikacja exportera — historyczna; aktualna tylko §8 (panel)](docs/specs/status-overlay-design.md)
-- [Historyczny zakres](docs/scope.md), [research](docs/research.md)
-- Przeglądy Claude Code: [architektura](docs/reviews/claude-architecture-review.md), [specyfikacja](docs/reviews/claude-spec-review.md)
+```sh
+swift run OverlaySelfCheck   # testy headless (kod wyjścia 0 = OK)
+```
+
+Command Line Tools nie zawierają XCTest, dlatego testy są osobnym programem. Używają fikstur i fałszywych procesów `/bin/sh`, bez Herdr, SSH ani GUI.
+
+- `Sources/OverlayCore`: parser `agent list`, wykrywanie zakończeń, stan źródeł, pętle odczytu, uruchamianie procesów.
+- `Sources/OverlayApp`: AppKit (panel, menu `HSO`, kliknięcie wiersza) i punkt wejścia helpera.
+- `Sources/OverlaySelfCheck`: testy.
+- `bin/`: skrypty akcji i zakładki pluginu z `herdr-plugin.toml`.

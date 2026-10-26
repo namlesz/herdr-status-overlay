@@ -1,7 +1,7 @@
 import Foundation
 
 /// Raw status reported by the Herdr server for one agent.
-public enum ServerStatus: String, CaseIterable {
+public enum ServerStatus: String {
     case working, blocked, done, idle, unknown
 }
 
@@ -21,10 +21,10 @@ public struct AgentKey: Hashable, Comparable {
 }
 
 /// Allowlisted projection of one `agent list` entry. Everything else in the response is dropped.
-public struct AgentRecord: Equatable {
+public struct AgentRecord {
     public let key: AgentKey
-    public let workspace: String
     public let label: String
+    /// Final `cwd` component, else `workspace_id`.
     public let place: String?
     public let activity: String?
     public let status: ServerStatus
@@ -68,7 +68,7 @@ public enum AgentListParser {
             let label = [kind, name].compactMap { $0 }.first { !$0.isEmpty } ?? paneID
             let cwd = try optionalString(object, "cwd").map { Text.label(($0 as NSString).lastPathComponent) }
             let activity = try optionalString(object, "terminal_title_stripped").map(Text.label)
-            return AgentRecord(key: key, workspace: workspaceID ?? "—", label: label,
+            return AgentRecord(key: key, label: label,
                                place: cwd.flatMap { $0.isEmpty ? nil : $0 } ?? workspaceID,
                                activity: activity.flatMap { $0.isEmpty ? nil : $0 },
                                status: status, completionSeq: try sequence(object, "completion_seq"))

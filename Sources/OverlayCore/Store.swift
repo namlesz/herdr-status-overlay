@@ -7,7 +7,6 @@ public struct RowView: Equatable {
     public let sourceID: String
     public let key: AgentKey
     public let status: DisplayStatus
-    public let workspace: String
     public let label: String
     public let place: String?
     public let activity: String?
@@ -22,7 +21,6 @@ public struct SectionView: Equatable {
     public let label: String
     /// nil while the source is stale: the UI shows "—", never zeros.
     public let counts: [DisplayStatus: Int]?
-    public let staleAgents: Int
     public let stale: Bool
     public let problem: Problem?
     /// Every agent as a row: blocked, working, finished, unknown, then idle; each group by place, name and key.
@@ -100,7 +98,7 @@ public struct Store {
                 let status = source.tracker.display(agent, now: now)
                 counts[status, default: 0] += 1
                 rows.append(RowView(sourceID: source.config.id, key: agent.key, status: status,
-                                    workspace: agent.workspace, label: agent.label,
+                                    label: agent.label,
                                     place: agent.place, activity: agent.activity))
             }
             rows.sort {
@@ -112,7 +110,6 @@ public struct Store {
             }
             return SectionView(id: source.config.id, label: source.config.label,
                                counts: stale ? nil : counts,
-                               staleAgents: stale ? source.agents.count : 0,
                                stale: stale, problem: problem(source, stale: stale), rows: rows)
         }
     }

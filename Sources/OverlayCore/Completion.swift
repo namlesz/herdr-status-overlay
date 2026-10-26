@@ -1,4 +1,4 @@
-/// Status shown by the overlay; finished agents disappear after a short retention period.
+/// Status shown by the overlay; `done` reverts to idle after `SourceConfig.finishedTTL`.
 public enum DisplayStatus: String, CaseIterable {
     case working, blocked, done, idle, unknown
 }
@@ -6,7 +6,7 @@ public enum DisplayStatus: String, CaseIterable {
 /// Completion markers are not task counters. Recovery re-establishes their baseline;
 /// explicit server done is still shown, including on the first snapshot.
 public struct CompletionTracker {
-    struct Track: Equatable {
+    struct Track {
         var seq: UInt64?
         var sawWorking: Bool
         var finishedAt: UInt64?
