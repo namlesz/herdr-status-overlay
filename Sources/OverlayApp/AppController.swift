@@ -114,11 +114,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func updateToggleTitle() {
-        toggleItem?.title = panel.isVisible ? "Hide panel" : "Show panel"
+        toggleItem?.title = panel.isVisibilityEnabled ? "Hide panel" : "Show panel"
     }
 
     @objc private func toggle() {
-        panel.setVisible(!panel.isVisible)
+        panel.setVisible(!panel.isVisibilityEnabled)
         updateToggleTitle()
     }
 

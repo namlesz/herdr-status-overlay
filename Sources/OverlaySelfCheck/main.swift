@@ -179,6 +179,9 @@ do {
     let local = SourceConfig.local(executable: "/fake/herdr")
     let remote = SourceConfig.machine("box", executable: "/fake/herdr")
     var store = Store(sources: [local, remote])
+    func displayed(_ now: UInt64) -> [String] {
+        store.view(now: now).filter(\.shouldDisplay).map(\.id)
+    }
     let t0: UInt64 = 1_000 * 1_000_000_000
     func section(_ id: String, _ now: UInt64) -> SectionView { store.view(now: now).first { $0.id == id }! }
 
@@ -190,6 +193,7 @@ do {
           "counts, blocked row before idle row")
     check(section("machine:box", t0).problem == .waiting, "sources are independent")
     check(store.view(now: t0) == store.view(now: t0 + seconds(1)), "unchanged heartbeat gives equal view")
+    check(displayed(t0) == ["local"], "remote is hidden until its first successful read")
 
     g = store.begin("local")
     store.succeed("local", generation: g, agents: parse([agent("w1:p2", "idle", seq: 3)]), now: t0 + seconds(2))
@@ -202,15 +206,24 @@ do {
     store.succeed("machine:box", generation: g, agents: parse([agent("w9:p1", "idle", seq: 1)]), now: t0)
     check(!section("machine:box", t0 + seconds(19)).stale, "remote fresh before 20 s")
     check(section("machine:box", t0 + seconds(21)).stale, "remote stale after 20 s")
+    check(displayed(t0 + seconds(19)) == ["local", "machine:box"], "fresh remote is shown")
+    check(displayed(t0 + seconds(21)) == ["local"], "outdated remote is hidden, local stays")
 
     g = store.begin("machine:box")
     store.fail("machine:box", generation: g, failure: .timeout)
     check(section("machine:box", t0 + seconds(1)).problem == .failed(.timeout), "failure is immediately stale")
     check(section("local", t0 + seconds(2)).problem == nil, "remote failure does not touch local")
+    check(displayed(t0 + seconds(2)) == ["local"], "failed remote is immediately hidden")
 
     store.expire(now: t0 + seconds(61))
     view = section("machine:box", t0 + seconds(61))
     check(view.rows.isEmpty && view.counts == nil, "cache dropped after 60 s, section kept")
+    store.succeed("machine:box", generation: g, agents: [], now: t0 + seconds(62))
+    check(displayed(t0 + seconds(62)) == ["local", "machine:box"], "successful reconnect restores even an empty remote")
+    store.wake()
+    check(displayed(t0 + seconds(63)) == ["local"], "wake hides remote until a fresh read")
+    let remoteOnly = Store(sources: [remote]).view(now: t0).filter(\.shouldDisplay)
+    check(remoteOnly.isEmpty, "no available cards leaves the panel empty")
 
     var waking = Store(sources: [local])
     g = waking.begin("local")

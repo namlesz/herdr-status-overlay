@@ -27,14 +27,14 @@ Stop: zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku me
 
 **`done`.** Agent ma status `done`, gdy serwer zgłasza `done` albo gdy overlay wykryje wzrost `completion_seq`. Po 10 minutach oznaczenie przechodzi w bezczynny; gdy agent znów pracuje, od razu wraca status pracujący (zablokowany i nieznany też mają pierwszeństwo przed `done`). Pierwszy odczyt, także po błędzie lub wybudzeniu Maca, ustala punkt odniesienia `completion_seq`, więc nie tworzy fałszywych zakończeń, ale jawne `done` serwera pokazuje. Stan jest wyłącznie w pamięci.
 
-**Nieaktualne dane.** Dane lokalne stają się nieaktualne po 6 s bez udanego odczytu, remote po 20 s, a przy błędzie lub po wybudzeniu od razu. Liczniki pokazują wtedy `—`, karta ma dopisek „stale data”, a wiersze są szare. Po 60 s od ostatniego udanego odczytu lista agentów znika, ale karta zostaje z opisem problemu.
+**Nieaktualne dane.** Dane lokalne stają się nieaktualne po 6 s bez udanego odczytu, remote po 20 s, a przy błędzie lub po wybudzeniu od razu. Karta remote jest ukryta, dopóki nie nadejdzie udany, świeży odczyt; pozostałe źródła działają dalej. Pusty panel jest automatycznie ukrywany bez zmiany zapisanej preferencji widoczności. Lokalna karta pozostaje: liczniki pokazują `—`, karta ma dopisek „stale data”, a wiersze są szare. Po 60 s od ostatniego udanego odczytu lista agentów znika z pamięci.
 
 ## Ograniczenia
 
 - Karty są per źródło (sesja lokalna / alias), nie per klient Herdr. Nie ma sumy ani deduplikacji agentów między źródłami.
 - API nie podaje epoki serwera. Restart serwera między dwoma udanymi odczytami jest wykrywany tylko po nowym `terminal_id` lub spadku `completion_seq`.
 - Przy kilku oknach Ghostty to macOS wybiera, które wyjdzie na wierzch. Focus agenta remote zmienia się na serwerze remote; lokalny klient Herdr nie przełącza się sam na widok tej maszyny.
-- Każdy odczyt remote to proces ssh i zdalny `herdr`. Wygasłe połączenie, którego nie da się odnowić bez hasła, widać jako „Read failed (exit N)” bez rozróżnienia przyczyny. Wtedy wykonaj `herdr machine reconnect`.
+- Każdy odczyt remote to proces ssh i zdalny `herdr`. Błąd odczytu ukrywa kartę bez rozróżnienia przyczyny. Jeśli połączenia nie da się odnowić bez hasła, wykonaj `herdr machine reconnect`.
 - Etykieta miejsca to katalog roboczy albo `workspace_id`; nazw workspace nie ma w odpowiedzi `agent list`.
 - Nie testowano na macOS 13, Intel ani z VoiceOver.
 

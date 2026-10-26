@@ -59,14 +59,15 @@ final class PanelController: NSObject, NSWindowDelegate {
                                                object: nil)
     }
 
-    var isVisible: Bool { panel.isVisible }
+    /// User preference, independent of automatic hiding when no cards are available.
+    var isVisibilityEnabled: Bool { state.visible }
 
     func restoreVisibility() { setVisible(state.visible) }
 
     /// Never makes the panel key or activates the app.
     func setVisible(_ visible: Bool) {
-        if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
         state.visible = visible
+        updateVisibility()
         saveState()
     }
 
@@ -78,11 +79,19 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     /// Rebuilds only when the view model changed; heartbeats with equal data do nothing.
     func render(_ sections: [SectionView]) {
+        let sections = sections.filter(\.shouldDisplay)
         guard sections != rendered else { return }
         rendered = sections
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for section in sections { addSection(section) }
         resize()
+        updateVisibility()
+    }
+
+    private func updateVisibility() {
+        let visible = state.visible && !(rendered ?? []).isEmpty
+        if visible == panel.isVisible { return }
+        if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
     }
 
     // MARK: Panel setup

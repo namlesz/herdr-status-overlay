@@ -25,6 +25,9 @@ public struct SectionView: Equatable {
     public let problem: Problem?
     /// Every agent as a row: blocked, working, finished, unknown, then idle; each group by place, name and key.
     public let rows: [RowView]
+
+    /// Remote cards are shown only while their snapshot is fresh; local diagnostics stay visible.
+    public var shouldDisplay: Bool { !id.hasPrefix("machine:") || !stale }
 }
 
 /// Per-source state. Not thread-safe; `OverlayModel` serializes access.
