@@ -14,21 +14,19 @@ private final class FlippedView: NSView {
 }
 
 final class PanelController: NSObject, NSWindowDelegate {
-    private static let width: CGFloat = 340
+    private static let width: CGFloat = 420
     private static let margin: CGFloat = 16
 
     private let panel: NSPanel
     private let scroll = NSScrollView()
     private let stack = NSStackView()
     private let stateFile: URL
-    private let onAcknowledge: (String, AgentKey) -> Void
     private var state: PanelState
     private var rendered: [SectionView]?
     private var adjustingFrame = false
 
-    init(stateFile: URL, onAcknowledge: @escaping (String, AgentKey) -> Void) {
+    init(stateFile: URL) {
         self.stateFile = stateFile
-        self.onAcknowledge = onAcknowledge
         state = (try? JSONDecoder().decode(PanelState.self, from: Data(contentsOf: stateFile))) ?? PanelState()
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 120),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -62,10 +60,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard sections != rendered else { return }
         rendered = sections
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        acknowledgements = [:]
         for section in sections { addSection(section) }
-        let note = label("done = lista zakończeń overlayu; OK nie zmienia stanu Herdr.", size: 10, secondary: true)
-        stack.addArrangedSubview(note)
         resize()
     }
 
@@ -85,12 +80,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.delegate = self
         panel.setAccessibilityLabel("Herdr Status Overlay")
 
-        let background = NSVisualEffectView()
-        background.material = .hudWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 10
-        background.layer?.masksToBounds = true
+        let background = NSView()
         panel.contentView = background
 
         scroll.drawsBackground = false
@@ -104,8 +94,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         scroll.documentView = document
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
 
@@ -127,70 +116,149 @@ final class PanelController: NSObject, NSWindowDelegate {
     // MARK: Content
 
     private func addSection(_ section: SectionView) {
-        let title = section.stale ? "\(section.label) — dane nieaktualne" : section.label
-        stack.addArrangedSubview(label(title, size: 12, bold: true, secondary: section.stale))
+        let card = NSStackView()
+        card.appearance = NSAppearance(named: .darkAqua)
+        card.orientation = .vertical
+        card.alignment = .leading
+        card.spacing = 4
+        card.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.92).cgColor
+        card.layer?.cornerRadius = 10
+        card.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(card)
+        card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        let order: [DisplayStatus] = [.working, .blocked, .done, .idle, .unknown]
-        var counts = section.counts.map { counts in
-            order.map { "\($0.rawValue) \(counts[$0] ?? 0)" }.joined(separator: " · ")
-        } ?? "liczniki: —"
-        if section.staleAgents > 0 { counts += " · \(section.staleAgents) z nieaktualnych danych" }
-        stack.addArrangedSubview(label(counts, size: 11, secondary: section.stale))
+        let title = section.stale ? "\(section.label) — stale data" : section.label
+        let titleField = label(title, size: 15, bold: true, secondary: section.stale)
+        titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleField.toolTip = title
+        let titleLine = NSStackView(views: [titleField, NSView(), countView(section)])
+        titleLine.orientation = .horizontal
+        titleLine.alignment = .centerY
+        titleLine.spacing = 6
+        card.addArrangedSubview(titleLine)
+        titleLine.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -24).isActive = true
 
         if let problem = section.problem {
-            stack.addArrangedSubview(label(describe(problem), size: 11, secondary: true))
+            card.addArrangedSubview(label(describe(problem), size: 11, secondary: true))
         }
-        for row in section.rows { stack.addArrangedSubview(rowView(row, stale: section.stale)) }
-        if section.id != rendered?.last?.id { stack.addArrangedSubview(NSBox.separator()) }
+        for row in section.rows {
+            let view = rowView(row, stale: section.stale)
+            card.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -24).isActive = true
+        }
+    }
+
+    /// Counters as colored icons with numbers; words only in the tooltip.
+    private func countView(_ section: SectionView) -> NSView {
+        guard !section.stale else { return label("—", size: 13, secondary: true) }
+        let order: [DisplayStatus] = [.working, .blocked, .done, .idle, .unknown]
+        var views: [NSView] = []
+        var summary: [String] = []
+        for status in order {
+            guard let count = section.counts?[status], count > 0 else { continue }
+            let number = label("\(count)", size: 13)
+            number.textColor = statusColor(status)
+            let pair = NSStackView(views: [statusIcon(status, size: 12, color: statusColor(status)), number])
+            pair.spacing = 3
+            views.append(pair)
+            summary.append("\(count) \(statusName(status))")
+        }
+        guard !views.isEmpty else { return label("no agents", size: 13, secondary: true) }
+        let counters = NSStackView(views: views)
+        counters.spacing = 10
+        counters.toolTip = summary.joined(separator: " · ")
+        return counters
     }
 
     private func rowView(_ row: RowView, stale: Bool) -> NSView {
-        let status = row.status == .blocked ? "BLOCKED" : "DONE"
-        var text = "\(status)  \(row.workspace) · \(row.label)"
-        if stale { text += " · dane nieaktualne" }
-        let field = label(text, size: 12, secondary: stale)
-        field.lineBreakMode = .byTruncatingTail
-        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        guard row.status == .done else { return field }
-
-        let button = NSButton(title: "OK", target: self, action: #selector(acknowledge(_:)))
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.setAccessibilityLabel("Potwierdź zakończenie: \(row.label)")
-        acknowledgements[ObjectIdentifier(button)] = (row.sourceID, row.key)
-        let line = NSStackView(views: [field, button])
+        guard [.working, .blocked, .done].contains(row.status) else { return NSView() }
+        let icon = statusIcon(row.status, size: 14, color: stale ? .secondaryLabelColor : statusColor(row.status))
+        let name = label(row.label, size: 14, bold: true, secondary: stale)
+        let place = label(row.place ?? row.workspace, size: 14, secondary: true)
+        place.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let line = NSStackView(views: [icon, name, place, NSView()])
         line.orientation = .horizontal
+        line.alignment = .centerY
         line.spacing = 6
-        return line
+        line.toolTip = "\(row.label) · \(row.place ?? row.workspace) — \(statusName(row.status))"
+
+        let details = NSStackView(views: [line])
+        details.orientation = .vertical
+        details.alignment = .leading
+        details.spacing = 2
+        line.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
+        if let activity = row.activity, activity != row.label {
+            let field = label(activity, size: 12, secondary: true)
+            field.toolTip = activity
+            let activityLine = NSStackView(views: [NSView(), field])
+            activityLine.orientation = .horizontal
+            activityLine.spacing = 6
+            activityLine.views[0].widthAnchor.constraint(equalToConstant: 16).isActive = true
+            details.addArrangedSubview(activityLine)
+            activityLine.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        return details
     }
 
-    private var acknowledgements: [ObjectIdentifier: (String, AgentKey)] = [:]
+    private func statusIcon(_ status: DisplayStatus, size: CGFloat, color: NSColor) -> NSImageView {
+        let symbol: String
+        switch status {
+        case .working: symbol = "circle.fill"
+        case .blocked: symbol = "exclamationmark.triangle.fill"
+        case .done: symbol = "checkmark.circle.fill"
+        case .idle: symbol = "moon.fill"
+        case .unknown: symbol = "questionmark.circle"
+        }
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: statusName(status))?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size, weight: .regular))
+        icon.contentTintColor = color
+        icon.widthAnchor.constraint(equalToConstant: size + 2).isActive = true
+        return icon
+    }
 
-    @objc private func acknowledge(_ sender: NSButton) {
-        guard let (source, key) = acknowledgements[ObjectIdentifier(sender)] else { return }
-        onAcknowledge(source, key)
+    private func statusName(_ status: DisplayStatus) -> String {
+        status == .working ? "in progress" : status.rawValue
+    }
+
+    /// JetBrains Mono when installed, otherwise the system font.
+    private static func font(size: CGFloat, bold: Bool) -> NSFont {
+        NSFont(name: bold ? "JetBrainsMono-Bold" : "JetBrainsMono-Regular", size: size)
+            ?? (bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size))
+    }
+
+    private func statusColor(_ status: DisplayStatus) -> NSColor {
+        switch status {
+        case .working: return .systemBlue
+        case .blocked: return .systemYellow
+        case .done: return .systemGreen
+        case .idle, .unknown: return .secondaryLabelColor
+        }
     }
 
     private func describe(_ problem: SectionView.Problem) -> String {
         switch problem {
-        case .waiting: return "Brak danych — czekam na pierwszy odczyt."
-        case .outdated: return "Brak świeżego odczytu."
-        case .afterWake: return "Po wybudzeniu — czekam na świeży odczyt."
+        case .waiting: return "No data yet — waiting for the first read."
+        case .outdated: return "No fresh read."
+        case .afterWake: return "After wake — waiting for a fresh read."
         case .failed(let failure):
             switch failure {
-            case .exit(let code): return "Odczyt nieudany (kod \(code)). Sprawdź alias lub herdr machine status."
-            case .signal(let signal): return "Odczyt przerwany sygnałem \(signal)."
-            case .timeout: return "Odczyt przekroczył 10 s."
-            case .oversized: return "Odpowiedź przekroczyła 1 MiB."
-            case .malformed: return "Niepoprawna odpowiedź API."
-            case .spawn(let code): return "Nie można uruchomić herdr (errno \(code))."
+            case .exit(let code): return "Read failed (exit \(code)). Check the alias or herdr machine status."
+            case .signal(let signal): return "Read killed by signal \(signal)."
+            case .timeout: return "Read timed out after 10 s."
+            case .oversized: return "Response exceeded 1 MiB."
+            case .malformed: return "Malformed API response."
+            case .spawn(let code): return "Cannot start herdr (errno \(code))."
             }
         }
     }
 
     private func label(_ text: String, size: CGFloat, bold: Bool = false, secondary: Bool = false) -> NSTextField {
         let field = NSTextField(labelWithString: text)
-        field.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
+        field.font = Self.font(size: size, bold: bold)
         field.textColor = secondary ? .secondaryLabelColor : .labelColor
         field.maximumNumberOfLines = 1
         field.lineBreakMode = .byTruncatingTail
@@ -261,13 +329,5 @@ final class PanelController: NSObject, NSWindowDelegate {
         resize(to: screen)
         recordPosition()
         saveState()
-    }
-}
-
-private extension NSBox {
-    static func separator() -> NSBox {
-        let box = NSBox()
-        box.boxType = .separator
-        return box
     }
 }

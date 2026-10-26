@@ -15,8 +15,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let model = OverlayModel(sources: sources)
         self.model = model
         pollers = sources.map { SourcePoller(source: $0, model: model) }
-        panel = PanelController(stateFile: stateDirectory.appendingPathComponent("panel.json"),
-                                onAcknowledge: { model.acknowledge($0, key: $1) })
+        panel = PanelController(stateFile: stateDirectory.appendingPathComponent("panel.json"))
         super.init()
     }
 
@@ -61,7 +60,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         toggle.target = self
         menu.addItem(toggle)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Zakończ overlay", action: #selector(quit), keyEquivalent: "")
+        let quit = NSMenuItem(title: "Quit overlay", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
         item.menu = menu
@@ -71,7 +70,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func updateToggleTitle() {
-        toggleItem?.title = panel.isVisible ? "Ukryj panel" : "Pokaż panel"
+        toggleItem?.title = panel.isVisible ? "Hide panel" : "Show panel"
     }
 
     @objc private func toggle() {

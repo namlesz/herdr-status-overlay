@@ -9,6 +9,8 @@ public struct RowView: Equatable {
     public let status: DisplayStatus
     public let workspace: String
     public let label: String
+    public let place: String?
+    public let activity: String?
 }
 
 public struct SectionView: Equatable {
@@ -23,7 +25,7 @@ public struct SectionView: Equatable {
     public let staleAgents: Int
     public let stale: Bool
     public let problem: Problem?
-    /// blocked rows first, then the overlay's pending completions.
+    /// Blocked, working and finished rows, sorted by place, name and key.
     public let rows: [RowView]
 }
 
@@ -59,7 +61,7 @@ public struct Store {
         sources[index].agents = agents
         sources[index].lastSuccess = now
         sources[index].invalidation = nil
-        sources[index].tracker.apply(agents)
+        sources[index].tracker.apply(agents, now: now)
         return true
     }
 
@@ -89,27 +91,24 @@ public struct Store {
         }
     }
 
-    public mutating func acknowledge(_ id: String, key: AgentKey) {
-        guard let index = index(id) else { return }
-        sources[index].tracker.acknowledge(key)
-    }
-
     public func view(now: UInt64) -> [SectionView] {
         sources.map { source in
             let stale = isStale(source, now: now)
             var counts = Dictionary(uniqueKeysWithValues: DisplayStatus.allCases.map { ($0, 0) })
             var rows: [RowView] = []
             for agent in source.agents {
-                let status = source.tracker.display(agent)
+                let status = source.tracker.display(agent, now: now)
                 counts[status, default: 0] += 1
-                if status == .blocked || status == .done {
+                if status == .blocked || status == .working || status == .done {
                     rows.append(RowView(sourceID: source.config.id, key: agent.key, status: status,
-                                        workspace: agent.workspace, label: agent.label))
+                                        workspace: agent.workspace, label: agent.label,
+                                        place: agent.place, activity: agent.activity))
                 }
             }
             rows.sort {
-                if $0.status != $1.status { return $0.status == .blocked }
-                if $0.workspace != $1.workspace { return $0.workspace < $1.workspace }
+                let order: [DisplayStatus] = [.blocked, .working, .done]
+                if $0.status != $1.status { return order.firstIndex(of: $0.status)! < order.firstIndex(of: $1.status)! }
+                if $0.place != $1.place { return ($0.place ?? "") < ($1.place ?? "") }
                 if $0.label != $1.label { return $0.label < $1.label }
                 return $0.key < $1.key
             }

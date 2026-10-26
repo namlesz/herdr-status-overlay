@@ -73,5 +73,5 @@ for number in [SIGHUP, SIGTERM, SIGINT] {
 }
 
 print("Status overlay działa: lokalna sesja + \(machines.aliases.count) zapisanych maszyn.")
-print("Zamknij ten panel albo wybierz „Zakończ overlay” w menu HSO, aby go zatrzymać.")
+print("Close this pane or choose “Quit overlay” in the HSO menu to stop it.")
 app.run()

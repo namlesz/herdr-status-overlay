@@ -37,10 +37,6 @@ public final class OverlayModel {
     public func tick() { queue.async { self.store.expire(now: self.clock()); self.publish() } }
     public func wake() { queue.async { self.store.wake(); self.publish() } }
 
-    public func acknowledge(_ id: String, key: AgentKey) {
-        queue.async { self.store.acknowledge(id, key: key); self.publish() }
-    }
-
     public func snapshot() -> [SectionView] { queue.sync { store.view(now: clock()) } }
 
     private func publish() {

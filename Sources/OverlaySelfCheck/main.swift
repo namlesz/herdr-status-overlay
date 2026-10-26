@@ -44,12 +44,31 @@ do {
     let records = parse([agent("w1:p1", "idle", seq: 135, name: "  Bob\u{0007}\u{2028}x  "),
                          agent("w1:p2", "working", terminal: nil)])
     check(records.count == 2, "parses agents and ignores unknown fields")
-    check(records[0].label == "Bob x", "sanitizes and collapses label")
+    check(records[0].label == "claude", "agent kind takes priority over name")
     check(records[0].completionSeq == 135, "reads completion_seq")
     check(records[1].label == "claude", "falls back to agent type")
     check(records[1].key.terminalID == nil, "terminal_id is optional")
     check(records[0].workspace == "w1", "workspace falls back to public id")
 
+    var titled = agent("w1:p5", "working", name: "  Bob\u{0007}x  ")
+    titled["agent"] = " "
+    titled["cwd"] = "/work/herdr-status-overlay/"
+    titled["terminal_title_stripped"] = "  Writing\n tests\u{0007} "
+    let detail = parse([titled])[0]
+    check(detail.label == "Bob x", "sanitized name is fallback when kind is empty")
+    check(detail.place == "herdr-status-overlay", "place is final cwd component")
+    check(detail.activity == "Writing tests", "activity is sanitized")
+    titled["cwd"] = " "
+    titled["terminal_title_stripped"] = "\n "
+    check(parse([titled])[0].place == "w1" && parse([titled])[0].activity == nil, "empty place falls back, empty activity omitted")
+    titled.removeValue(forKey: "cwd")
+    titled.removeValue(forKey: "terminal_title_stripped")
+    check(parse([titled])[0].place == "w1" && parse([titled])[0].activity == nil, "missing optional details")
+    for field in ["agent", "name", "cwd", "terminal_title_stripped"] {
+        var invalid = titled
+        invalid[field] = 7
+        check(parseError(json([invalid])) == .invalidField(field), "rejects non-string \(field)")
+    }
     let unnamed = parse([agent("w1:p3", "idle", name: "\u{0085}\u{2029}")])
     check(unnamed[0].label == "claude", "empty sanitized name uses fallback")
     var bare = agent("w1:p4", "idle")
@@ -87,75 +106,71 @@ do {
     var tracker = CompletionTracker()
     let key = AgentKey(paneID: "w1:p1", terminalID: "t-1")
     func step(_ status: String, _ seq: UInt64?, terminal: String = "t-1") {
-        tracker.apply(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) }, terminal: terminal)]))
+        tracker.apply(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) }, terminal: terminal)]), now: 0)
     }
     func displayed(_ status: String, _ seq: UInt64?) -> DisplayStatus {
-        tracker.display(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) })])[0])
+        tracker.display(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) })])[0], now: 0)
     }
 
     step("idle", 135)
-    check(!tracker.isPending(key), "baseline idle is not a completion")
+    check(!tracker.isPending(key, now: 0), "baseline idle is not a completion")
     step("working", nil)
-    check(!tracker.isPending(key), "working without seq keeps marker")
+    check(!tracker.isPending(key, now: 0), "working without seq keeps marker")
     step("idle", 135)
-    check(!tracker.isPending(key), "same marker is not a completion")
+    check(!tracker.isPending(key, now: 0), "same marker is not a completion")
     step("idle", 141)
-    check(tracker.isPending(key), "larger marker is a completion without seeing working")
+    check(tracker.isPending(key, now: 0), "larger marker is a completion without seeing working")
     check(displayed("idle", 141) == .done, "pending idle shows done")
     check(displayed("working", nil) == .working, "working wins over pending done")
     check(displayed("blocked", nil) == .blocked, "blocked wins over pending done")
     check(displayed("done", 141) == .done, "server done with pending shows done")
-    tracker.acknowledge(key)
-    check(!tracker.isPending(key) && displayed("done", 141) == .idle, "ack clears; server done alone is idle")
 
     step("idle", 150)
     step("idle", 100)
-    check(!tracker.isPending(key), "regression resets without completion")
+    check(!tracker.isPending(key, now: 0), "regression resets without completion")
     step("idle", 120)
-    check(tracker.isPending(key), "new marker after reset counts")
+    check(tracker.isPending(key, now: 0), "new marker after reset counts")
 
     var fresh = CompletionTracker()
-    fresh.apply(parse([agent("w1:p1", "working")]))
-    fresh.apply(parse([agent("w1:p1", "idle", seq: 7)]))
-    check(fresh.isPending(key), "observed working then first marker is a completion")
+    fresh.apply(parse([agent("w1:p1", "working")]), now: 0)
+    fresh.apply(parse([agent("w1:p1", "idle", seq: 7)]), now: 0)
+    check(fresh.isPending(key, now: 0), "observed working then first marker is a completion")
 
     var cold = CompletionTracker()
-    cold.apply(parse([agent("w1:p1", "idle")]))
-    cold.apply(parse([agent("w1:p1", "idle", seq: 7)]))
-    check(!cold.isPending(key), "first marker without observed working is not a completion")
+    cold.apply(parse([agent("w1:p1", "idle")]), now: 0)
+    cold.apply(parse([agent("w1:p1", "idle", seq: 7)]), now: 0)
+    check(!cold.isPending(key, now: 0), "first marker without observed working is not a completion")
 
     var earlyMarker = CompletionTracker()
-    earlyMarker.apply(parse([agent("w1:p1", "idle")]))
-    earlyMarker.apply(parse([agent("w1:p1", "working", seq: 7)]))
-    earlyMarker.apply(parse([agent("w1:p1", "idle", seq: 7)]))
-    check(!earlyMarker.isPending(key), "first marker on the first working snapshot is only a baseline")
+    earlyMarker.apply(parse([agent("w1:p1", "idle")]), now: 0)
+    earlyMarker.apply(parse([agent("w1:p1", "working", seq: 7)]), now: 0)
+    earlyMarker.apply(parse([agent("w1:p1", "idle", seq: 7)]), now: 0)
+    check(!earlyMarker.isPending(key, now: 0), "first marker on the first working snapshot is only a baseline")
 
     var identity = CompletionTracker()
-    identity.apply(parse([agent("w1:p1", "idle", seq: 5)]))
-    identity.apply(parse([agent("w1:p1", "idle", seq: 9, terminal: "t-2")]))
-    check(!identity.isPending(AgentKey(paneID: "w1:p1", terminalID: "t-2")), "new terminal is a new baseline")
+    identity.apply(parse([agent("w1:p1", "idle", seq: 5)]), now: 0)
+    identity.apply(parse([agent("w1:p1", "idle", seq: 9, terminal: "t-2")]), now: 0)
+    check(!identity.isPending(AgentKey(paneID: "w1:p1", terminalID: "t-2"), now: 0), "new terminal is a new baseline")
 
     var removal = CompletionTracker()
-    removal.apply(parse([agent("w1:p1", "idle", seq: 5)]))
-    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]))
-    removal.apply(parse([]))
-    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]))
-    check(!removal.isPending(key), "removed agent drops pending and re-baselines")
+    removal.apply(parse([agent("w1:p1", "idle", seq: 5)]), now: 0)
+    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]), now: 0)
+    removal.apply(parse([]), now: 0)
+    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]), now: 0)
+    check(!removal.isPending(key, now: 0), "removed agent drops pending and re-baselines")
 
     var recovery = CompletionTracker()
-    recovery.apply(parse([agent("w1:p1", "idle", seq: 5), agent("w1:p2", "idle", seq: 1)]))
-    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 1)]))
+    recovery.apply(parse([agent("w1:p1", "idle", seq: 5), agent("w1:p2", "idle", seq: 1)]), now: 0)
+    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 1)]), now: 0)
     recovery.rebaseline()
-    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 9)]))
-    check(recovery.isPending(key), "recovery keeps unacknowledged completion")
-    check(!recovery.isPending(AgentKey(paneID: "w1:p2", terminalID: "t-1")), "recovery never invents completion")
+    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 9)]), now: 0)
+    check(recovery.isPending(key, now: 0), "recovery keeps unexpired completion")
+    check(!recovery.isPending(AgentKey(paneID: "w1:p2", terminalID: "t-1"), now: 0), "recovery never invents completion")
 
     var sticky = CompletionTracker()
-    sticky.apply(parse([agent("w1:p1", "idle", seq: 1)]))
-    for seq in 2...5 { sticky.apply(parse([agent("w1:p1", "idle", seq: NSNumber(value: seq))])) }
-    check(sticky.isPending(key), "one pending record per agent, not history")
-    sticky.acknowledge(key)
-    check(!sticky.isPending(key), "single ack clears it")
+    sticky.apply(parse([agent("w1:p1", "idle", seq: 1)]), now: 0)
+    for seq in 2...5 { sticky.apply(parse([agent("w1:p1", "idle", seq: NSNumber(value: seq))]), now: 0) }
+    check(sticky.isPending(key, now: 0), "one pending record per agent, not history")
 }
 
 // MARK: Store, freshness, wake
@@ -197,7 +212,6 @@ do {
     check(view.staleAgents == 0 && view.rows.isEmpty && view.counts == nil, "cache dropped after 60 s, section kept")
 
     var waking = Store(sources: [local])
-    let key = AgentKey(paneID: "w1:p1", terminalID: "t-1")
     g = waking.begin("local")
     waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 1)]), now: t0)
     let inFlight = waking.begin("local")
@@ -212,15 +226,54 @@ do {
     waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 3)]), now: t0 + seconds(3))
     let rows = waking.view(now: t0 + seconds(3))[0].rows
     check(rows.count == 1 && rows[0].status == .done, "completion after baseline listed")
-    waking.acknowledge("local", key: key)
-    check(waking.view(now: t0 + seconds(3))[0].rows.isEmpty, "ack removes overlay done row")
 
     var sorting = Store(sources: [local])
     g = sorting.begin("local")
     sorting.succeed("local", generation: g, agents: parse([agent("w2:p1", "working"), agent("w1:p9", "blocked"),
                                                            agent("w1:p1", "blocked")]), now: t0)
     let ids = sorting.view(now: t0)[0].rows.map(\.key.paneID)
-    check(ids == ["w1:p1", "w1:p9"], "rows sorted deterministically")
+    check(ids == ["w1:p1", "w1:p9", "w2:p1"], "blocked rows precede working, sorted deterministically")
+}
+
+
+// MARK: Finished retention and detailed rows
+
+do {
+    var store = Store(sources: [SourceConfig.local(executable: "/fake")])
+    func snapshot(_ status: String, _ time: Double, seq: Int = 1) -> SectionView {
+        store.succeed("local", generation: store.begin("local"),
+                      agents: parse([agent("w1:p1", status, seq: seq)]), now: seconds(time))
+        return store.view(now: seconds(time))[0]
+    }
+    check(snapshot("done", 0).counts?[.done] == 1, "server done is finished on first snapshot")
+    check(snapshot("done", 599).rows.first?.status == .done, "repeated server done stays until TTL")
+    store.expire(now: seconds(600))
+    let expired = store.view(now: seconds(600))[0]
+    check(expired.rows.isEmpty && expired.counts?[.idle] == 1, "server done expires exactly at 600 seconds")
+    check(snapshot("done", 600).rows.isEmpty, "unchanged server done does not restart expiry")
+    check(snapshot("working", 601).rows.first?.status == .working, "working row is visible")
+    check(snapshot("idle", 602).rows.isEmpty, "working clears old completion")
+    check(snapshot("done", 603).counts?[.done] == 1, "new server done transition starts a new finish")
+    check(snapshot("working", 604, seq: 2).counts?[.done] == 0, "working clears completion even with a new marker")
+    check(snapshot("idle", 605, seq: 2).rows.isEmpty, "cleared completion cannot resurface")
+    check(snapshot("idle", 606, seq: 3).rows.first?.status == .done, "new completion marker still creates a finish")
+    _ = snapshot("idle", 1205, seq: 3)
+    check(store.view(now: seconds(1206))[0].rows.isEmpty, "marker-based finish expires after 600 seconds too")
+
+    var detailed = agent("w1:p1", "working")
+    detailed["cwd"] = "/repo/finance"
+    detailed["terminal_title_stripped"] = "Writing tests"
+    store.succeed("local", generation: store.begin("local"), agents: parse([detailed]), now: seconds(1207))
+    let row = store.view(now: seconds(1207))[0].rows.first
+    check(row?.place == "finance" && row?.activity == "Writing tests", "row carries place and activity")
+
+    var a = agent("a", "working"), z = agent("z", "working")
+    a["cwd"] = "/repo/zeta"
+    z["cwd"] = "/repo/alpha"
+    store.succeed("local", generation: store.begin("local"),
+                  agents: parse([a, z, agent("blocked", "blocked"), agent("done", "done")]), now: seconds(1208))
+    check(store.view(now: seconds(1208))[0].rows.map(\.key.paneID) == ["blocked", "z", "a", "done"],
+          "rows sort blocked, working, done, then place")
 }
 
 // MARK: Panel geometry (no AppKit or GUI)

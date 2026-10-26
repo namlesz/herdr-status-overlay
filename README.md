@@ -14,13 +14,13 @@ Plugin Herdr `local.status-overlay` (bez zmian w Herdr) ma akcję „Status over
 
 - co 2 s czyta lokalną sesję: `$HERDR_BIN_PATH agent list` (socket z kontekstu pluginu);
 - co 5 s (licząc od końca poprzedniego odczytu) czyta każdy alias z `machines.txt`: `$HERDR_BIN_PATH --machine <alias> agent list`;
-- pokazuje jeden pływający `NSPanel` z sekcją na źródło: pięć liczników, wiersze `BLOCKED` i własne `DONE`.
+- pokazuje jeden pływający panel szerokości 420 pt z ciemną kartą na źródło: niezerowe liczniki oraz wiersze pracujących, zablokowanych i zakończonych agentów. Wiersz pokazuje rodzaj agenta, katalog projektu (lub workspace) i opcjonalny tytuł aktywności; bez nagłówków trybu i przycisków.
 
-`DONE` to lista zakończeń overlayu oparta na `completion_seq`, nie klientowe done/seen Herdr. Przycisk OK usuwa wpis tylko z overlayu; nie wywołuje focus/ack/input w Herdr. Pierwszy odczyt (i każdy po błędzie lub wybudzeniu) jest punktem odniesienia i nie tworzy zakończeń.
+`DONE` („skończył”) pochodzi ze statusu `done` serwera lub wykrytej zmiany `completion_seq`. Wpis znika sam po 10 minutach od wykrycia albo gdy agent znów pracuje — bez klikania i bez focus/ack/input w Herdr. Pierwszy odczyt (także po błędzie lub wybudzeniu) ustala punkt odniesienia dla znacznika, ale nadal pokazuje jawne `done` serwera.
 
-Dane nieaktualne: lokalne po 6 s, remote po 20 s bez udanego odczytu, a błąd lub timeout od razu. Liczniki pokazują wtedy `—`, wiersze są oznaczone „dane nieaktualne”, po 60 s cache znika (sekcja zostaje). Po wybudzeniu Maca wszystkie dane są nieaktualne do następnego odczytu.
+Dane nieaktualne: lokalne po 6 s, remote po 20 s bez udanego odczytu, a błąd lub timeout od razu. Liczniki pokazują wtedy `—`, nagłówek karty ma dopisek „stale data”, a wiersze są szare, po 60 s cache znika (sekcja zostaje). Po wybudzeniu Maca wszystkie dane są nieaktualne do następnego odczytu.
 
-Zamknięcie panelu pluginu, SIGHUP/SIGTERM lub „Zakończ overlay” w menu `HSO` kończy helper i jego odczyty. Agenci działają dalej.
+Zamknięcie panelu pluginu, SIGHUP/SIGTERM lub „Quit overlay” w menu `HSO` kończy helper i jego odczyty. Agenci działają dalej.
 
 ## Budowanie i testy
 

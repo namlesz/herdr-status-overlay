@@ -25,6 +25,8 @@ public struct AgentRecord: Equatable {
     public let key: AgentKey
     public let workspace: String
     public let label: String
+    public let place: String?
+    public let activity: String?
     public let status: ServerStatus
     public let completionSeq: UInt64?
 }
@@ -63,8 +65,12 @@ public enum AgentListParser {
 
             let name = try optionalString(object, "name").map(Text.label)
             let kind = try optionalString(object, "agent").map(Text.label)
-            let label = [name, kind].compactMap { $0 }.first { !$0.isEmpty } ?? paneID
+            let label = [kind, name].compactMap { $0 }.first { !$0.isEmpty } ?? paneID
+            let cwd = try optionalString(object, "cwd").map { Text.label(($0 as NSString).lastPathComponent) }
+            let activity = try optionalString(object, "terminal_title_stripped").map(Text.label)
             return AgentRecord(key: key, workspace: workspaceID ?? "—", label: label,
+                               place: cwd.flatMap { $0.isEmpty ? nil : $0 } ?? workspaceID,
+                               activity: activity.flatMap { $0.isEmpty ? nil : $0 },
                                status: status, completionSeq: try sequence(object, "completion_seq"))
         }
     }

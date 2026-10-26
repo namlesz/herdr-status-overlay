@@ -8,6 +8,7 @@ public struct SourceConfig: Equatable {
     public let staleAfter: UInt64
 
     public static let retention = seconds(60)
+    public static let finishedTTL = seconds(600)
 
     public init(id: String, label: String, arguments: [String], interval: Double, staleAfter: UInt64) {
         self.id = id
@@ -18,7 +19,7 @@ public struct SourceConfig: Equatable {
     }
 
     public static func local(executable: String) -> SourceConfig {
-        SourceConfig(id: "local", label: "Lokalna sesja", arguments: [executable, "agent", "list"],
+        SourceConfig(id: "local", label: "Local", arguments: [executable, "agent", "list"],
                      interval: 2, staleAfter: seconds(6))
     }
 
