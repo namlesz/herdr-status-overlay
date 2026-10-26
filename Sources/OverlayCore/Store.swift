@@ -25,7 +25,7 @@ public struct SectionView: Equatable {
     public let staleAgents: Int
     public let stale: Bool
     public let problem: Problem?
-    /// Blocked, working and finished rows, sorted by place, name and key.
+    /// Every agent as a row: blocked, working, finished, unknown, then idle; each group by place, name and key.
     public let rows: [RowView]
 }
 
@@ -99,14 +99,12 @@ public struct Store {
             for agent in source.agents {
                 let status = source.tracker.display(agent, now: now)
                 counts[status, default: 0] += 1
-                if status == .blocked || status == .working || status == .done {
-                    rows.append(RowView(sourceID: source.config.id, key: agent.key, status: status,
-                                        workspace: agent.workspace, label: agent.label,
-                                        place: agent.place, activity: agent.activity))
-                }
+                rows.append(RowView(sourceID: source.config.id, key: agent.key, status: status,
+                                    workspace: agent.workspace, label: agent.label,
+                                    place: agent.place, activity: agent.activity))
             }
             rows.sort {
-                let order: [DisplayStatus] = [.blocked, .working, .done]
+                let order: [DisplayStatus] = [.blocked, .working, .done, .unknown, .idle]
                 if $0.status != $1.status { return order.firstIndex(of: $0.status)! < order.firstIndex(of: $1.status)! }
                 if $0.place != $1.place { return ($0.place ?? "") < ($1.place ?? "") }
                 if $0.label != $1.label { return $0.label < $1.label }

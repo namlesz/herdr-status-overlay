@@ -4,29 +4,39 @@ public struct SourceConfig: Equatable {
     public let id: String
     public let label: String
     public let arguments: [String]
+    /// argv prefix for commands addressed to this source's server, e.g. `agent focus`.
+    public let command: [String]
     public let interval: Double
     public let staleAfter: UInt64
 
     public static let retention = seconds(60)
     public static let finishedTTL = seconds(600)
 
-    public init(id: String, label: String, arguments: [String], interval: Double, staleAfter: UInt64) {
+    public init(id: String, label: String, arguments: [String], command: [String] = [],
+                interval: Double, staleAfter: UInt64) {
         self.id = id
         self.label = label
         self.arguments = arguments
+        self.command = command
         self.interval = interval
         self.staleAfter = staleAfter
     }
 
     public static func local(executable: String) -> SourceConfig {
         SourceConfig(id: "local", label: "Local", arguments: [executable, "agent", "list"],
-                     interval: 2, staleAfter: seconds(6))
+                     command: [executable], interval: 2, staleAfter: seconds(6))
     }
 
     public static func machine(_ alias: String, executable: String) -> SourceConfig {
         SourceConfig(id: "machine:" + alias, label: alias,
                      arguments: [executable, "--machine", alias, "agent", "list"],
-                     interval: 5, staleAfter: seconds(20))
+                     command: [executable, "--machine", alias], interval: 5, staleAfter: seconds(20))
+    }
+
+    /// Selects the agent's pane in Herdr. nil when the pane id could be read as an option.
+    public func focusArguments(paneID: String) -> [String]? {
+        guard !command.isEmpty, Text.isIdentifier(paneID), !paneID.hasPrefix("-") else { return nil }
+        return command + ["agent", "focus", paneID]
     }
 }
 

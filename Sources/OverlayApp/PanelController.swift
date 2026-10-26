@@ -13,6 +13,25 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// Agent row that reacts to a click without dragging the panel or needing it to be key first.
+private final class ClickableRow: NSStackView {
+    var onClick: (() -> Void)?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    /// The whole row, labels and icons included, takes the click.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        frame.contains(point) ? self : nil
+    }
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
 final class PanelController: NSObject, NSWindowDelegate {
     private static let width: CGFloat = 420
     private static let margin: CGFloat = 16
@@ -24,6 +43,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var state: PanelState
     private var rendered: [SectionView]?
     private var adjustingFrame = false
+    /// Called on the main thread when the user clicks an agent row.
+    var onSelect: ((RowView) -> Void)?
 
     init(stateFile: URL) {
         self.stateFile = stateFile
@@ -173,7 +194,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func rowView(_ row: RowView, stale: Bool) -> NSView {
-        guard [.working, .blocked, .done].contains(row.status) else { return NSView() }
         let icon = statusIcon(row.status, size: 14, color: stale ? .secondaryLabelColor : statusColor(row.status))
         let name = label(row.label, size: 14, bold: true, secondary: stale)
         let place = label(row.place ?? row.workspace, size: 14, secondary: true)
@@ -182,9 +202,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 6
-        line.toolTip = "\(row.label) · \(row.place ?? row.workspace) — \(statusName(row.status))"
-
-        let details = NSStackView(views: [line])
+        let details = ClickableRow(views: [line])
+        details.toolTip = "\(row.label) · \(row.place ?? row.workspace) — \(statusName(row.status)). Click to open."
+        details.onClick = { [weak self] in self?.onSelect?(row) }
         details.orientation = .vertical
         details.alignment = .leading
         details.spacing = 2

@@ -14,9 +14,10 @@ Plugin Herdr `local.status-overlay` (bez zmian w Herdr) ma akcję „Status over
 
 - co 2 s czyta lokalną sesję: `$HERDR_BIN_PATH agent list` (socket z kontekstu pluginu);
 - co 5 s (licząc od końca poprzedniego odczytu) czyta każdy alias z `machines.txt`: `$HERDR_BIN_PATH --machine <alias> agent list`;
-- pokazuje jeden pływający panel szerokości 420 pt z ciemną kartą na źródło: niezerowe liczniki oraz wiersze pracujących, zablokowanych i zakończonych agentów. Wiersz pokazuje rodzaj agenta, katalog projektu (lub workspace) i opcjonalny tytuł aktywności; bez nagłówków trybu i przycisków.
+- pokazuje jeden pływający panel szerokości 420 pt z ciemną kartą na źródło: niezerowe liczniki oraz wiersz każdego agenta: zablokowane, pracujące, zakończone, nieznane, a na końcu bezczynne. Wiersz pokazuje rodzaj agenta, katalog projektu (lub workspace) i opcjonalny tytuł aktywności; bez nagłówków trybu i przycisków;
+- po kliknięciu w dowolne miejsce wiersza agenta (także bezczynnego) wywołuje `herdr [--machine <alias>] agent focus <pane_id>`, a równocześnie aktywuje Ghostty przez LaunchServices (macOS przełącza na jego Space). Przy kilku oknach Ghostty to macOS wybiera, które wyjdzie na wierzch. Dla agenta remote focus zmienia się tylko na serwerze remote; lokalny klient Herdr nie przełącza się sam na widok tej maszyny (API nie ma takiej operacji). Błąd sygnalizuje dźwiękiem.
 
-`DONE` („skończył”) pochodzi ze statusu `done` serwera lub wykrytej zmiany `completion_seq`. Wpis znika sam po 10 minutach od wykrycia albo gdy agent znów pracuje — bez klikania i bez focus/ack/input w Herdr. Pierwszy odczyt (także po błędzie lub wybudzeniu) ustala punkt odniesienia dla znacznika, ale nadal pokazuje jawne `done` serwera.
+`DONE` („skończył”) pochodzi ze statusu `done` serwera lub wykrytej zmiany `completion_seq`. Wpis znika sam po 10 minutach od wykrycia albo gdy agent znów pracuje — bez klikania i bez ack/input w Herdr (focus tylko po kliknięciu wiersza). Pierwszy odczyt (także po błędzie lub wybudzeniu) ustala punkt odniesienia dla znacznika, ale nadal pokazuje jawne `done` serwera.
 
 Dane nieaktualne: lokalne po 6 s, remote po 20 s bez udanego odczytu, a błąd lub timeout od razu. Liczniki pokazują wtedy `—`, nagłówek karty ma dopisek „stale data”, a wiersze są szare, po 60 s cache znika (sekcja zostaje). Po wybudzeniu Maca wszystkie dane są nieaktualne do następnego odczytu.
 

@@ -16,9 +16,10 @@ Stan po pierwszej implementacji pluginu i helpera. Nic tu nie jest zrobione.
 - Odpowiedź bez `completion_seq` po `working` nie tworzy zakończenia, dopóki znacznik się nie pojawi.
 - Błędy auth remote widać jako „Odczyt nieudany (kod N)” bez rozróżnienia przyczyny (stderr nie jest czytany).
 - Pozycja panelu jest zapisywana w `HERDR_PLUGIN_STATE_DIR/panel.json`, nie w `UserDefaults` (brak bundle).
+- Kliknięcie wiersza (`agent focus`) oznacza agenta w Herdr jako seen, ale własny DONE overlayu zostaje do 10 min lub ponownej pracy.
 - `NSStatusItem` ma tekst „HSO” zamiast ikony.
 - Wysokość panelu jest przeliczana tylko przy zmianie danych lub ekranów.
 
 ## Poza zakresem MVP (świadomie)
 
-Przechodzenie do agenta, sterowanie oknami/Spaces, powiadomienia, sekcje per klient, deduplikacja źródeł, skanowanie wszystkich maszyn, `--remote`, autostart, `.app` bundle, notaryzacja.
+Wybór konkretnego okna Ghostty przy kilku oknach, powiadomienia, sekcje per klient, deduplikacja źródeł, skanowanie wszystkich maszyn, `--remote`, autostart, `.app` bundle, notaryzacja.

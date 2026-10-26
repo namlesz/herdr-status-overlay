@@ -186,13 +186,14 @@ do {
     var g = store.begin("local")
     store.succeed("local", generation: g, agents: parse([agent("w1:p1", "blocked"), agent("w1:p2", "idle", seq: 3)]), now: t0)
     var view = section("local", t0)
-    check(view.counts?[.blocked] == 1 && view.counts?[.idle] == 1 && view.rows.count == 1, "counts and blocked row")
+    check(view.counts?[.blocked] == 1 && view.counts?[.idle] == 1 && view.rows.map(\.status) == [.blocked, .idle],
+          "counts, blocked row before idle row")
     check(section("machine:box", t0).problem == .waiting, "sources are independent")
     check(store.view(now: t0) == store.view(now: t0 + seconds(1)), "unchanged heartbeat gives equal view")
 
     g = store.begin("local")
     store.succeed("local", generation: g, agents: parse([agent("w1:p2", "idle", seq: 3)]), now: t0 + seconds(2))
-    check(section("local", t0 + seconds(2)).rows.isEmpty, "full replacement removes agents")
+    check(section("local", t0 + seconds(2)).rows.map(\.key.paneID) == ["w1:p2"], "full replacement removes agents")
 
     view = section("local", t0 + seconds(9))
     check(view.stale && view.counts == nil && view.staleAgents == 1 && view.problem == .outdated, "local stale after 6 s")
@@ -221,7 +222,7 @@ do {
     check(waking.view(now: t0 + seconds(1))[0].problem == .afterWake, "wake marks data stale")
     g = waking.begin("local")
     waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 2)]), now: t0 + seconds(2))
-    check(waking.view(now: t0 + seconds(2))[0].rows.isEmpty, "first read after wake is a baseline")
+    check(waking.view(now: t0 + seconds(2))[0].rows.map(\.status) == [.idle], "first read after wake is a baseline")
     g = waking.begin("local")
     waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 3)]), now: t0 + seconds(3))
     let rows = waking.view(now: t0 + seconds(3))[0].rows
@@ -249,16 +250,16 @@ do {
     check(snapshot("done", 599).rows.first?.status == .done, "repeated server done stays until TTL")
     store.expire(now: seconds(600))
     let expired = store.view(now: seconds(600))[0]
-    check(expired.rows.isEmpty && expired.counts?[.idle] == 1, "server done expires exactly at 600 seconds")
-    check(snapshot("done", 600).rows.isEmpty, "unchanged server done does not restart expiry")
+    check(expired.rows.map(\.status) == [.idle] && expired.counts?[.idle] == 1, "server done expires exactly at 600 seconds")
+    check(snapshot("done", 600).rows.map(\.status) == [.idle], "unchanged server done does not restart expiry")
     check(snapshot("working", 601).rows.first?.status == .working, "working row is visible")
-    check(snapshot("idle", 602).rows.isEmpty, "working clears old completion")
+    check(snapshot("idle", 602).rows.map(\.status) == [.idle], "working clears old completion")
     check(snapshot("done", 603).counts?[.done] == 1, "new server done transition starts a new finish")
     check(snapshot("working", 604, seq: 2).counts?[.done] == 0, "working clears completion even with a new marker")
-    check(snapshot("idle", 605, seq: 2).rows.isEmpty, "cleared completion cannot resurface")
+    check(snapshot("idle", 605, seq: 2).rows.map(\.status) == [.idle], "cleared completion cannot resurface")
     check(snapshot("idle", 606, seq: 3).rows.first?.status == .done, "new completion marker still creates a finish")
     _ = snapshot("idle", 1205, seq: 3)
-    check(store.view(now: seconds(1206))[0].rows.isEmpty, "marker-based finish expires after 600 seconds too")
+    check(store.view(now: seconds(1206))[0].rows.map(\.status) == [.idle], "marker-based finish expires after 600 seconds too")
 
     var detailed = agent("w1:p1", "working")
     detailed["cwd"] = "/repo/finance"
@@ -271,9 +272,10 @@ do {
     a["cwd"] = "/repo/zeta"
     z["cwd"] = "/repo/alpha"
     store.succeed("local", generation: store.begin("local"),
-                  agents: parse([a, z, agent("blocked", "blocked"), agent("done", "done")]), now: seconds(1208))
-    check(store.view(now: seconds(1208))[0].rows.map(\.key.paneID) == ["blocked", "z", "a", "done"],
-          "rows sort blocked, working, done, then place")
+                  agents: parse([agent("idle", "idle"), a, z, agent("blocked", "blocked"), agent("done", "done")]),
+                  now: seconds(1208))
+    check(store.view(now: seconds(1208))[0].rows.map(\.key.paneID) == ["blocked", "z", "a", "done", "idle"],
+          "rows sort blocked, working, done, idle, then place")
 }
 
 // MARK: Panel geometry (no AppKit or GUI)
@@ -315,6 +317,12 @@ do {
     let source = SourceConfig.machine("box", executable: "/x/herdr")
     check(source.arguments == ["/x/herdr", "--machine", "box", "agent", "list"], "remote argv without shell")
     check(SourceConfig.local(executable: "/x/herdr").arguments == ["/x/herdr", "agent", "list"], "local argv")
+    check(source.focusArguments(paneID: "p1") == ["/x/herdr", "--machine", "box", "agent", "focus", "p1"],
+          "remote focus argv")
+    check(SourceConfig.local(executable: "/x/herdr").focusArguments(paneID: "p1")
+          == ["/x/herdr", "agent", "focus", "p1"], "local focus argv")
+    check(source.focusArguments(paneID: "--help") == nil, "option-like pane id rejected")
+    check(source.focusArguments(paneID: "") == nil, "empty pane id rejected")
 }
 
 // MARK: Process runner (fake children)
