@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs the helper in the foreground of the plugin pane. No daemon, no detaching.
+set -eu
+helper="$HERDR_PLUGIN_ROOT/.build/release/HerdrStatusOverlay"
+if [ ! -x "$helper" ]; then
+    echo "Brak zbudowanego helpera. Zbuduj go: swift build -c release (w katalogu pluginu)." >&2
+    exit 1
+fi
+exec "$helper"

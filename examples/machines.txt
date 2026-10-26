@@ -1,0 +1,4 @@
+# Aliasy zapisanych maszyn Herdr (zob. `herdr machine list`), po jednym w wierszu.
+# Kopiuj do katalogu z `herdr plugin config-dir local.status-overlay` jako machines.txt.
+# Brak pliku lub pusta lista = tylko lokalna sesja. Alias nie może zaczynać się od "-".
+# my-machine

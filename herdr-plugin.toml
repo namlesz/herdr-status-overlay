@@ -1,0 +1,20 @@
+id = "local.status-overlay"
+name = "Status Overlay"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Native macOS panel with agent statuses read from the Herdr API."
+platforms = ["macos"]
+
+# The action only opens the helper pane in the background and returns.
+[[actions]]
+id = "open"
+title = "Status overlay: start"
+contexts = ["workspace"]
+command = ["bin/open-overlay"]
+
+# The helper is the foreground process of this pane; closing the pane stops it.
+[[panes]]
+id = "helper"
+title = "Status overlay"
+placement = "tab"
+command = ["bin/run-helper"]

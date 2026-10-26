@@ -1,0 +1,400 @@
+import Darwin
+import Foundation
+import CoreGraphics
+import OverlayCore
+
+// Headless test suite: fixtures and /bin/sh fakes only. No Herdr, SSH or GUI.
+
+var failures = 0
+var checks = 0
+
+func check(_ condition: @autoclosure () -> Bool, _ name: String, line: Int = #line) {
+    checks += 1
+    if !condition() {
+        failures += 1
+        print("FAIL [\(line)] \(name)")
+    }
+}
+
+func json(_ agents: [[String: Any]], extra: [String: Any] = [:]) -> Data {
+    var root: [String: Any] = ["id": "x", "result": ["agents": agents]]
+    root.merge(extra) { a, _ in a }
+    return try! JSONSerialization.data(withJSONObject: root)
+}
+
+func agent(_ pane: String, _ status: String, seq: Any? = nil, terminal: String? = "t-1",
+           name: Any? = nil) -> [String: Any] {
+    var object: [String: Any] = ["pane_id": pane, "workspace_id": "w1", "agent_status": status,
+                                 "agent": "claude", "cwd": "/private", "focused": false]
+    if let seq { object["completion_seq"] = seq }
+    if let terminal { object["terminal_id"] = terminal }
+    if let name { object["name"] = name }
+    return object
+}
+
+func parse(_ agents: [[String: Any]]) -> [AgentRecord] { try! AgentListParser.parse(json(agents)) }
+
+func parseError(_ data: Data) -> ParseError? {
+    do { _ = try AgentListParser.parse(data); return nil } catch { return error as? ParseError }
+}
+
+// MARK: Parser
+
+do {
+    let records = parse([agent("w1:p1", "idle", seq: 135, name: "  Bob\u{0007}\u{2028}x  "),
+                         agent("w1:p2", "working", terminal: nil)])
+    check(records.count == 2, "parses agents and ignores unknown fields")
+    check(records[0].label == "Bob x", "sanitizes and collapses label")
+    check(records[0].completionSeq == 135, "reads completion_seq")
+    check(records[1].label == "claude", "falls back to agent type")
+    check(records[1].key.terminalID == nil, "terminal_id is optional")
+    check(records[0].workspace == "w1", "workspace falls back to public id")
+
+    let unnamed = parse([agent("w1:p3", "idle", name: "\u{0085}\u{2029}")])
+    check(unnamed[0].label == "claude", "empty sanitized name uses fallback")
+    var bare = agent("w1:p4", "idle")
+    bare.removeValue(forKey: "agent")
+    check(parse([bare])[0].label == "w1:p4", "pane_id is the last label fallback")
+
+    let long = String(repeating: "a", count: 1023) + "é" + "b"
+    let cut = Text.label(long)
+    check(cut.utf8.count <= 1024 && cut.hasSuffix("a") && !cut.contains("é"), "label cut on character boundary")
+    check(Text.label("x\u{7f}y\u{9f}z") == "x y z", "DEL and C1 replaced")
+
+    check(parseError(json([agent("w1:p1", "sleeping")])) == .invalidField("agent_status"), "unknown status rejected")
+    check(parseError(json([["pane_id": 7, "agent_status": "idle"]])) == .invalidField("pane_id"), "pane_id type")
+    check(parseError(json([agent("w1:p1", "idle", seq: true)])) == .invalidField("completion_seq"), "bool seq rejected")
+    check(parseError(json([agent("w1:p1", "idle", seq: 1.5)])) == .invalidField("completion_seq"), "fraction seq rejected")
+    check(parseError(json([agent("w1:p1", "idle", seq: -1)])) == .invalidField("completion_seq"), "negative seq rejected")
+    check(parseError(json([agent("w1:p1", "idle", name: 3)])) == .invalidField("name"), "label type rejected")
+    check(parseError(json([agent("w1:p1", "idle"), agent("w1:p1", "busy")])) != nil, "bad entry rejects snapshot")
+    check(parseError(json([agent("w1:p1", "idle"), agent("w1:p1", "idle")])) == .duplicate, "duplicate rejected")
+    check(parseError(json([agent("w1:\u{1b}p1", "idle")])) == .invalidField("pane_id"), "control char in id rejected")
+    check(parseError(Data("{\"error\":{}}".utf8)) == .malformed, "error response rejected")
+    check(parseError(Data([0xff, 0xfe])) == .malformed, "invalid UTF-8 rejected")
+    check(parseError(Data(count: AgentListParser.maxBytes + 1)) == .oversized, "oversized rejected")
+    let many = (0...AgentListParser.maxAgents).map { agent("p\($0)", "idle") }
+    check(parseError(json(many)) == .tooManyAgents, "agent count bounded")
+    var nulls = agent("w1:p1", "idle")
+    nulls["completion_seq"] = NSNull()
+    nulls["name"] = NSNull()
+    check((try? AgentListParser.parse(json([nulls])))?.first?.completionSeq == nil, "null optionals accepted")
+}
+
+// MARK: Completions
+
+do {
+    var tracker = CompletionTracker()
+    let key = AgentKey(paneID: "w1:p1", terminalID: "t-1")
+    func step(_ status: String, _ seq: UInt64?, terminal: String = "t-1") {
+        tracker.apply(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) }, terminal: terminal)]))
+    }
+    func displayed(_ status: String, _ seq: UInt64?) -> DisplayStatus {
+        tracker.display(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) })])[0])
+    }
+
+    step("idle", 135)
+    check(!tracker.isPending(key), "baseline idle is not a completion")
+    step("working", nil)
+    check(!tracker.isPending(key), "working without seq keeps marker")
+    step("idle", 135)
+    check(!tracker.isPending(key), "same marker is not a completion")
+    step("idle", 141)
+    check(tracker.isPending(key), "larger marker is a completion without seeing working")
+    check(displayed("idle", 141) == .done, "pending idle shows done")
+    check(displayed("working", nil) == .working, "working wins over pending done")
+    check(displayed("blocked", nil) == .blocked, "blocked wins over pending done")
+    check(displayed("done", 141) == .done, "server done with pending shows done")
+    tracker.acknowledge(key)
+    check(!tracker.isPending(key) && displayed("done", 141) == .idle, "ack clears; server done alone is idle")
+
+    step("idle", 150)
+    step("idle", 100)
+    check(!tracker.isPending(key), "regression resets without completion")
+    step("idle", 120)
+    check(tracker.isPending(key), "new marker after reset counts")
+
+    var fresh = CompletionTracker()
+    fresh.apply(parse([agent("w1:p1", "working")]))
+    fresh.apply(parse([agent("w1:p1", "idle", seq: 7)]))
+    check(fresh.isPending(key), "observed working then first marker is a completion")
+
+    var cold = CompletionTracker()
+    cold.apply(parse([agent("w1:p1", "idle")]))
+    cold.apply(parse([agent("w1:p1", "idle", seq: 7)]))
+    check(!cold.isPending(key), "first marker without observed working is not a completion")
+
+    var earlyMarker = CompletionTracker()
+    earlyMarker.apply(parse([agent("w1:p1", "idle")]))
+    earlyMarker.apply(parse([agent("w1:p1", "working", seq: 7)]))
+    earlyMarker.apply(parse([agent("w1:p1", "idle", seq: 7)]))
+    check(!earlyMarker.isPending(key), "first marker on the first working snapshot is only a baseline")
+
+    var identity = CompletionTracker()
+    identity.apply(parse([agent("w1:p1", "idle", seq: 5)]))
+    identity.apply(parse([agent("w1:p1", "idle", seq: 9, terminal: "t-2")]))
+    check(!identity.isPending(AgentKey(paneID: "w1:p1", terminalID: "t-2")), "new terminal is a new baseline")
+
+    var removal = CompletionTracker()
+    removal.apply(parse([agent("w1:p1", "idle", seq: 5)]))
+    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]))
+    removal.apply(parse([]))
+    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]))
+    check(!removal.isPending(key), "removed agent drops pending and re-baselines")
+
+    var recovery = CompletionTracker()
+    recovery.apply(parse([agent("w1:p1", "idle", seq: 5), agent("w1:p2", "idle", seq: 1)]))
+    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 1)]))
+    recovery.rebaseline()
+    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 9)]))
+    check(recovery.isPending(key), "recovery keeps unacknowledged completion")
+    check(!recovery.isPending(AgentKey(paneID: "w1:p2", terminalID: "t-1")), "recovery never invents completion")
+
+    var sticky = CompletionTracker()
+    sticky.apply(parse([agent("w1:p1", "idle", seq: 1)]))
+    for seq in 2...5 { sticky.apply(parse([agent("w1:p1", "idle", seq: NSNumber(value: seq))])) }
+    check(sticky.isPending(key), "one pending record per agent, not history")
+    sticky.acknowledge(key)
+    check(!sticky.isPending(key), "single ack clears it")
+}
+
+// MARK: Store, freshness, wake
+
+do {
+    let local = SourceConfig.local(executable: "/fake/herdr")
+    let remote = SourceConfig.machine("box", executable: "/fake/herdr")
+    var store = Store(sources: [local, remote])
+    let t0: UInt64 = 1_000 * 1_000_000_000
+    func section(_ id: String, _ now: UInt64) -> SectionView { store.view(now: now).first { $0.id == id }! }
+
+    check(section("local", t0).problem == .waiting && section("local", t0).counts == nil, "no data yet is not zeros")
+    var g = store.begin("local")
+    store.succeed("local", generation: g, agents: parse([agent("w1:p1", "blocked"), agent("w1:p2", "idle", seq: 3)]), now: t0)
+    var view = section("local", t0)
+    check(view.counts?[.blocked] == 1 && view.counts?[.idle] == 1 && view.rows.count == 1, "counts and blocked row")
+    check(section("machine:box", t0).problem == .waiting, "sources are independent")
+    check(store.view(now: t0) == store.view(now: t0 + seconds(1)), "unchanged heartbeat gives equal view")
+
+    g = store.begin("local")
+    store.succeed("local", generation: g, agents: parse([agent("w1:p2", "idle", seq: 3)]), now: t0 + seconds(2))
+    check(section("local", t0 + seconds(2)).rows.isEmpty, "full replacement removes agents")
+
+    view = section("local", t0 + seconds(9))
+    check(view.stale && view.counts == nil && view.staleAgents == 1 && view.problem == .outdated, "local stale after 6 s")
+
+    g = store.begin("machine:box")
+    store.succeed("machine:box", generation: g, agents: parse([agent("w9:p1", "idle", seq: 1)]), now: t0)
+    check(!section("machine:box", t0 + seconds(19)).stale, "remote fresh before 20 s")
+    check(section("machine:box", t0 + seconds(21)).stale, "remote stale after 20 s")
+
+    g = store.begin("machine:box")
+    store.fail("machine:box", generation: g, failure: .timeout)
+    check(section("machine:box", t0 + seconds(1)).problem == .failed(.timeout), "failure is immediately stale")
+    check(section("local", t0 + seconds(2)).problem == nil, "remote failure does not touch local")
+
+    store.expire(now: t0 + seconds(61))
+    view = section("machine:box", t0 + seconds(61))
+    check(view.staleAgents == 0 && view.rows.isEmpty && view.counts == nil, "cache dropped after 60 s, section kept")
+
+    var waking = Store(sources: [local])
+    let key = AgentKey(paneID: "w1:p1", terminalID: "t-1")
+    g = waking.begin("local")
+    waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 1)]), now: t0)
+    let inFlight = waking.begin("local")
+    waking.wake()
+    check(!waking.succeed("local", generation: inFlight, agents: parse([agent("w1:p1", "idle", seq: 2)]),
+                          now: t0 + seconds(1)), "read started before sleep is discarded")
+    check(waking.view(now: t0 + seconds(1))[0].problem == .afterWake, "wake marks data stale")
+    g = waking.begin("local")
+    waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 2)]), now: t0 + seconds(2))
+    check(waking.view(now: t0 + seconds(2))[0].rows.isEmpty, "first read after wake is a baseline")
+    g = waking.begin("local")
+    waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 3)]), now: t0 + seconds(3))
+    let rows = waking.view(now: t0 + seconds(3))[0].rows
+    check(rows.count == 1 && rows[0].status == .done, "completion after baseline listed")
+    waking.acknowledge("local", key: key)
+    check(waking.view(now: t0 + seconds(3))[0].rows.isEmpty, "ack removes overlay done row")
+
+    var sorting = Store(sources: [local])
+    g = sorting.begin("local")
+    sorting.succeed("local", generation: g, agents: parse([agent("w2:p1", "working"), agent("w1:p9", "blocked"),
+                                                           agent("w1:p1", "blocked")]), now: t0)
+    let ids = sorting.view(now: t0)[0].rows.map(\.key.paneID)
+    check(ids == ["w1:p1", "w1:p9"], "rows sorted deterministically")
+}
+
+// MARK: Panel geometry (no AppKit or GUI)
+
+do {
+    let small = CGRect(x: 0, y: 0, width: 800, height: 600)
+    let largeFrame = CGRect(x: 700, y: 900, width: 340, height: 800)
+    let moved = PanelGeometry.clamp(largeFrame, to: small)
+    check(moved.height == 240 && small.contains(moved), "smaller monitor caps panel to 40 percent")
+    let anchored = PanelGeometry.clamp(CGRect(x: 20, y: 10, width: 340, height: 500), to: small)
+    check(anchored.maxY == 510, "height clamp preserves panel top when possible")
+    let tiny = CGRect(x: -100, y: -50, width: 200, height: 300)
+    let fitted = PanelGeometry.clamp(largeFrame, to: tiny)
+    check(fitted.width == 200 && fitted.height == 120 && tiny.contains(fitted),
+          "small screens and negative screen coordinates stay visible")
+}
+
+// MARK: Latest-wins UI delivery
+
+do {
+    let mailbox = LatestSections()
+    let initial = Store(sources: [SourceConfig.local(executable: "/fake")]).view(now: 0)
+    check(mailbox.replace(initial), "first UI update schedules a delivery")
+    var extraDeliveries = 0
+    for _ in 0..<1_000 { if mailbox.replace([]) { extraDeliveries += 1 } }
+    check(extraDeliveries == 0 && mailbox.take().isEmpty, "busy UI keeps only the latest sections")
+    check(mailbox.replace(initial) && mailbox.take() == initial, "UI delivery can be scheduled again after take")
+}
+
+// MARK: Config
+
+do {
+    let parsed = MachineList.parse("# comment\n\nbox\n  box  \n-oProxyCommand=x\nwith space\nok.host_1\n")
+    check(parsed.aliases == ["box", "ok.host_1"], "aliases parsed and deduplicated")
+    check(parsed.rejectedLines == [5, 6], "unsafe aliases rejected")
+    check(MachineList.parse("").aliases.isEmpty, "empty list allowed")
+    let missing = try? MachineList.load(directory: URL(fileURLWithPath: "/nonexistent-\(getpid())"))
+    check(missing == MachineList.Parsed(), "missing file means local only")
+    let source = SourceConfig.machine("box", executable: "/x/herdr")
+    check(source.arguments == ["/x/herdr", "--machine", "box", "agent", "list"], "remote argv without shell")
+    check(SourceConfig.local(executable: "/x/herdr").arguments == ["/x/herdr", "agent", "list"], "local argv")
+}
+
+// MARK: Process runner (fake children)
+
+func run(_ script: String, timeout: Double = 5, maxStdout: Int = 1 << 20) -> (RunOutcome, Double, pid_t) {
+    var limits = RunLimits()
+    limits.timeout = timeout
+    limits.maxStdout = maxStdout
+    let runner = ProcessRunner(limits: limits)
+    let start = Date()
+    let outcome = runner.run(["/bin/sh", "-c", script])
+    return (outcome, Date().timeIntervalSince(start), runner.lastGroup)
+}
+
+/// Killed orphans may stay as zombies until launchd reaps them, so allow a short settle time.
+func groupGone(_ group: pid_t) -> Bool {
+    for _ in 0..<50 {
+        if kill(-group, 0) == -1 && errno == ESRCH { return true }
+        usleep(20_000)
+    }
+    return false
+}
+
+do {
+    var (outcome, _, _) = run("printf ok")
+    check(outcome == .exited(0, stdout: Data("ok".utf8), stderrBytes: 0), "captures stdout")
+    (outcome, _, _) = run("exit 3")
+    check(outcome == .exited(3, stdout: Data(), stderrBytes: 0), "reports exit code")
+
+    let (slow, _, _) = run("printf a; sleep 0.2; printf b; sleep 0.2; printf c")
+    check(slow == .exited(0, stdout: Data("abc".utf8), stderrBytes: 0), "slow writer collected")
+
+    let (closedPipes, _, _) = run("exec 1>&- 2>&-; sleep 0.2; exit 0")
+    check(closedPipes == .exited(0, stdout: Data(), stderrBytes: 0),
+          "EOF on both pipes does not kill a running child")
+    let (closedTimeout, _, _) = run("exec 1>&- 2>&-; sleep 30", timeout: 0.3)
+    check(closedTimeout == .timedOut, "closed pipes still enforce the child timeout")
+
+    let (timedOut, took, group) = run("sleep 30 & sleep 30", timeout: 0.5)
+    check(timedOut == .timedOut && took < 3, "timeout kills child")
+    check(groupGone(group), "timeout kills whole process group")
+
+    let (straggler, stragglerTook, stragglerGroup) = run("(sleep 30 &); printf ok")
+    if case .exited(0, let out, _) = straggler { check(out == Data("ok".utf8), "straggler output kept") }
+    else { check(false, "straggler run exits normally") }
+    check(stragglerTook < 3, "leftover group members do not hold the read open")
+    check(groupGone(stragglerGroup), "leftover group members cleaned up")
+
+    let (big, _, _) = run("head -c 2000000 /dev/zero")
+    check(big == .oversized, "oversized stdout stopped")
+
+    let (flood, _, _) = run("head -c 5000000 /dev/zero >&2; printf done")
+    check(flood == .exited(0, stdout: Data("done".utf8), stderrBytes: 5_000_000), "stderr flood drained, not kept")
+
+    let (stdin, stdinTook, _) = run("cat")
+    check(stdin == .exited(0, stdout: Data(), stderrBytes: 0) && stdinTook < 2, "stdin is /dev/null")
+
+    let (tty, _, _) = run("if (: < /dev/tty) 2>/dev/null; then printf tty; else printf none; fi")
+    check(tty == .exited(0, stdout: Data("none".utf8), stderrBytes: 0), "no controlling terminal for prompts")
+
+    let missing = ProcessRunner().run(["/nonexistent/herdr", "agent", "list"])
+    check(missing == .spawnFailed(ENOENT), "spawn failure reported")
+
+    let killed = run("kill -TERM $$").0
+    check(killed == .signaled(SIGTERM), "signal reported")
+
+    let runner = ProcessRunner()
+    let finished = DispatchSemaphore(value: 0)
+    var cancelled: RunOutcome?
+    let cancelStart = Date()
+    DispatchQueue.global().async {
+        cancelled = runner.run(["/bin/sh", "-c", "sleep 30"])
+        finished.signal()
+    }
+    usleep(200_000)
+    runner.cancel()
+    check(finished.wait(timeout: .now() + 3) == .success && cancelled == .cancelled, "cancel stops child")
+    check(Date().timeIntervalSince(cancelStart) < 3 && groupGone(runner.lastGroup), "cancel cleans group")
+    check(runner.run(["/bin/sh", "-c", "printf x"]) == .cancelled, "cancelled runner starts nothing")
+}
+
+// MARK: Poller
+
+do {
+    check(SourcePoller.delay(afterFailures: 0, interval: 2, backoff: SourcePoller.backoff) == 2, "interval after success")
+    check((1...4).map { SourcePoller.delay(afterFailures: $0, interval: 2, backoff: SourcePoller.backoff) }
+          == [5, 10, 30, 30], "backoff 5/10/30")
+
+    let fast = SourceConfig(id: "local", label: "L", arguments: ["x"], interval: 0.01, staleAfter: seconds(6))
+    let other = SourceConfig(id: "machine:m", label: "M", arguments: ["y"], interval: 0.01, staleAfter: seconds(6))
+    let model = OverlayModel(sources: [fast, other])
+    let lock = NSLock()
+    var active: [String: Int] = [:], peak: [String: Int] = [:], calls: [String: Int] = [:]
+    func reader(_ id: String, fails: Bool) -> ([String]) -> RunOutcome {
+        { _ in
+            lock.lock(); active[id, default: 0] += 1; peak[id] = max(peak[id] ?? 0, active[id]!)
+            calls[id, default: 0] += 1; lock.unlock()
+            usleep(30_000)
+            lock.lock(); active[id]! -= 1; lock.unlock()
+            return fails ? .timedOut : .exited(0, stdout: json([agent("w1:p1", "idle", seq: 1)]), stderrBytes: 0)
+        }
+    }
+    let pollers = [SourcePoller(source: fast, model: model, read: reader("local", fails: false)),
+                   SourcePoller(source: other, model: model, read: reader("machine:m", fails: true),
+                                backoff: [0.01])]
+    pollers.forEach { $0.start() }
+    usleep(500_000)
+    pollers.forEach { $0.stop() }
+    usleep(100_000)
+    lock.lock()
+    check(peak["local"] == 1 && peak["machine:m"] == 1, "never more than one read per source")
+    check((calls["local"] ?? 0) >= 5 && (calls["machine:m"] ?? 0) >= 5, "both sources kept polling")
+    let settled = calls
+    lock.unlock()
+    usleep(100_000)
+    lock.lock()
+    check(calls == settled, "stop ends polling")
+    lock.unlock()
+    let longWait = SourceConfig(id: "local", label: "L", arguments: ["x"], interval: 60, staleAfter: seconds(6))
+    let refreshed = DispatchSemaphore(value: 0)
+    let resumePoller = SourcePoller(source: longWait, model: OverlayModel(sources: [longWait]), read: { _ in
+        refreshed.signal()
+        return .exited(0, stdout: json([]), stderrBytes: 0)
+    })
+    resumePoller.start()
+    check(refreshed.wait(timeout: .now() + 2) == .success, "initial poll starts")
+    resumePoller.refresh()
+    check(refreshed.wait(timeout: .now() + 2) == .success, "wake refresh skips the old interval")
+    resumePoller.stop()
+    check(resumePoller.drain(timeout: 2), "refreshed poller drains on stop")
+    let sections = model.snapshot()
+    check(sections[0].problem == nil && sections[1].problem == SectionView.Problem.failed(.timeout), "failing source isolated")
+}
+
+print("\(checks - failures)/\(checks) checks passed")
+exit(failures == 0 ? 0 : 1)

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Opens the plugin's helper pane without taking focus; the action returns immediately.
+set -eu
+exec "$HERDR_BIN_PATH" plugin pane open --plugin "$HERDR_PLUGIN_ID" --entrypoint helper \
+    --placement tab --no-focus
