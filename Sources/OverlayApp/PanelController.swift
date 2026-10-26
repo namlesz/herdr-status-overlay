@@ -1,13 +1,6 @@
 import AppKit
 import OverlayCore
 
-/// Persisted panel placement: top-left offset inside the visible frame of a screen.
-struct PanelState: Codable {
-    var visible = true
-    var screen: UInt32?
-    var left: Double?
-    var top: Double?
-}
 
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
@@ -43,6 +36,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var state: PanelState
     private var rendered: [SectionView]?
     private var adjustingFrame = false
+    private var contentWidth: CGFloat = PanelController.width
     /// Called on the main thread when the user clicks an agent row.
     var onSelect: ((RowView) -> Void)?
 
@@ -53,6 +47,8 @@ final class PanelController: NSObject, NSWindowDelegate {
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         configurePanel()
+        // Restore placement only after applying the saved mode's actual dimensions.
+        rebuildContent()
         placeFromState()
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification,
@@ -82,8 +78,18 @@ final class PanelController: NSObject, NSWindowDelegate {
         let sections = sections.filter(\.shouldDisplay)
         guard sections != rendered else { return }
         rendered = sections
+        rebuildContent()
+    }
+
+    private func rebuildContent() {
+        let sections = rendered ?? []
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for section in sections { addSection(section) }
+        contentWidth = Self.width
+        if state.minimized {
+            addCompactSummary(sections)
+        } else {
+            for section in sections { addSection(section) }
+        }
         resize()
         updateVisibility()
     }
@@ -145,7 +151,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     // MARK: Content
 
-    private func addSection(_ section: SectionView) {
+    private func makeCard() -> NSStackView {
         let card = NSStackView()
         card.appearance = NSAppearance(named: .darkAqua)
         card.orientation = .vertical
@@ -158,15 +164,55 @@ final class PanelController: NSObject, NSWindowDelegate {
         card.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(card)
         card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return card
+    }
+
+    private func toggleButton() -> NSButton {
+        let title = state.minimized ? "Expand overlay" : "Minimize overlay"
+        let button = NSButton(image: NSImage(systemSymbolName: state.minimized ? "chevron.right" : "chevron.down",
+                                            accessibilityDescription: title)!,
+                              target: self, action: #selector(toggleMinimized))
+        button.isBordered = false
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
+        return button
+    }
+
+    @objc private func toggleMinimized() {
+        state.minimized.toggle()
+        rebuildContent()
+        recordPosition()
+        saveState()
+    }
+
+    private func addCompactSummary(_ sections: [SectionView]) {
+        let card = makeCard()
+        let counters = countView(SectionView.activeCounts(in: sections),
+                                 order: [.working, .blocked, .done], emptyText: "No active agents")
+        let line = NSStackView(views: [toggleButton(), counters])
+        line.orientation = .horizontal
+        line.alignment = .centerY
+        line.spacing = 10
+        contentWidth = min(Self.width, (line.fittingSize.width + 24).rounded(.up))
+        card.addArrangedSubview(line)
+        let unavailable = sections.filter(\.stale).map(\.label)
+        card.toolTip = unavailable.isEmpty ? counters.toolTip
+            : "Fresh sources only. Unavailable: " + unavailable.joined(separator: ", ")
+    }
+
+    private func addSection(_ section: SectionView) {
+        let card = makeCard()
 
         let title = section.stale ? "\(section.label) — stale data" : section.label
         let titleField = label(title, size: 15, bold: true, secondary: section.stale)
         titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         titleField.toolTip = title
-        let titleLine = NSStackView(views: [titleField, NSView(), countView(section)])
+        let titleLine = NSStackView(views: [titleField, NSView(), countView(section.counts)])
         titleLine.orientation = .horizontal
         titleLine.alignment = .centerY
         titleLine.spacing = 6
+        if section.id == rendered?.first?.id { titleLine.addArrangedSubview(toggleButton()) }
         card.addArrangedSubview(titleLine)
         titleLine.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -24).isActive = true
 
@@ -181,13 +227,14 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     /// Counters as colored icons with numbers; words only in the tooltip.
-    private func countView(_ section: SectionView) -> NSView {
-        guard !section.stale else { return label("—", size: 13, secondary: true) }
-        let order: [DisplayStatus] = [.working, .blocked, .done, .idle, .unknown]
+    private func countView(_ counts: [DisplayStatus: Int]?,
+                           order: [DisplayStatus] = [.working, .blocked, .done, .idle, .unknown],
+                           emptyText: String = "no agents") -> NSView {
+        guard let counts else { return label("—", size: 13, secondary: true) }
         var views: [NSView] = []
         var summary: [String] = []
         for status in order {
-            guard let count = section.counts?[status], count > 0 else { continue }
+            guard let count = counts[status], count > 0 else { continue }
             let number = label("\(count)", size: 13)
             number.textColor = statusColor(status)
             let pair = NSStackView(views: [statusIcon(status, size: 12, color: statusColor(status)), number])
@@ -195,7 +242,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             views.append(pair)
             summary.append("\(count) \(statusName(status))")
         }
-        guard !views.isEmpty else { return label("no agents", size: 13, secondary: true) }
+        guard !views.isEmpty else { return label(emptyText, size: 13, secondary: true) }
         let counters = NSStackView(views: views)
         counters.spacing = 10
         counters.toolTip = summary.joined(separator: " · ")
@@ -309,7 +356,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let height = min(stack.fittingSize.height, screen.visibleFrame.height * 0.4).rounded(.up)
         var frame = panel.frame
         frame.origin.y = frame.maxY - height
-        frame.size = NSSize(width: Self.width, height: max(height, 40))
+        frame.size = NSSize(width: contentWidth, height: max(height, 40))
         panel.setFrame(clamped(frame, to: screen), display: true)
     }
 

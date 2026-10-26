@@ -173,6 +173,46 @@ do {
     check(sticky.isPending(key, now: 0), "one pending record per agent, not history")
 }
 
+// MARK: Panel preferences and compact counters
+
+do {
+    let legacy = Data(#"{"visible":false,"screen":7,"left":42,"top":18}"#.utf8)
+    var state = try! JSONDecoder().decode(PanelState.self, from: legacy)
+    check(!state.minimized && !state.visible, "legacy panel state preserves visibility and defaults to expanded")
+    check(state.screen == 7 && state.left == 42 && state.top == 18, "legacy panel placement survives migration")
+    state.minimized = true
+    let restored = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
+    check(restored.minimized && !restored.visible && restored.left == 42, "compact preference round-trips with existing state")
+    state.minimized = false
+    check(!(try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))).minimized,
+          "expanded preference round-trips")
+
+    var store = Store(sources: [.local(executable: "/fake"), .machine("box", executable: "/fake")])
+    check(SectionView.activeCounts(in: []) == nil, "empty compact snapshot has no data")
+    check(SectionView.activeCounts(in: store.view(now: 0)) == nil, "waiting compact snapshot is not zero agents")
+    store.succeed("local", generation: 0,
+                  agents: parse([agent("l1", "working"), agent("l2", "blocked"), agent("l3", "done"),
+                                 agent("l4", "idle"), agent("l5", "unknown")]), now: 0)
+    store.succeed("machine:box", generation: 0,
+                  agents: parse([agent("r1", "working"), agent("r2", "done")]), now: 0)
+    check(SectionView.activeCounts(in: store.view(now: 0)) == [.working: 2, .blocked: 1, .done: 2],
+          "compact sums sources and excludes idle and unknown")
+    store.fail("machine:box", generation: 0, failure: .timeout)
+    check(SectionView.activeCounts(in: store.view(now: 0)) == [.working: 1, .blocked: 1, .done: 1],
+          "compact excludes failed remote")
+    store.succeed("local", generation: 0, agents: parse([agent("l3", "done")]), now: 0)
+    check(SectionView.activeCounts(in: store.view(now: 0)) == [.done: 1],
+          "compact removes working and blocked counters entirely when their agents disappear")
+    store.succeed("local", generation: 0, agents: parse([agent("l1", "working")]), now: 0)
+    check(SectionView.activeCounts(in: store.view(now: 0)) == [.working: 1],
+          "compact keeps only the remaining nonzero status")
+    check(SectionView.activeCounts(in: store.view(now: seconds(7))) == nil, "compact excludes stale local too")
+    store.succeed("local", generation: 0, agents: parse([agent("l4", "idle")]), now: seconds(8))
+    check(SectionView.activeCounts(in: store.view(now: seconds(8))) == [:], "fresh idle-only snapshot has no active agents")
+    store.wake()
+    check(SectionView.activeCounts(in: store.view(now: seconds(8))) == nil, "wake clears usable compact counts")
+}
+
 // MARK: Store, freshness, wake
 
 do {
@@ -300,6 +340,10 @@ do {
     check(moved.height == 240 && small.contains(moved), "smaller monitor caps panel to 40 percent")
     let anchored = PanelGeometry.clamp(CGRect(x: 20, y: 10, width: 340, height: 500), to: small)
     check(anchored.maxY == 510, "height clamp preserves panel top when possible")
+    let desktop = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    let compact = CGRect(x: 1700, y: 1000, width: 160, height: 40)
+    check(PanelGeometry.clamp(compact, to: desktop) == compact,
+          "restoring compact dimensions preserves saved placement near the right edge")
     let tiny = CGRect(x: -100, y: -50, width: 200, height: 300)
     let fitted = PanelGeometry.clamp(largeFrame, to: tiny)
     check(fitted.width == 200 && fitted.height == 120 && tiny.contains(fitted),

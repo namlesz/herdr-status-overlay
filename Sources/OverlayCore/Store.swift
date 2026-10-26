@@ -28,6 +28,21 @@ public struct SectionView: Equatable {
 
     /// Remote cards are shown only while their snapshot is fresh; local diagnostics stay visible.
     public var shouldDisplay: Bool { !id.hasPrefix("machine:") || !stale }
+
+    /// Compact counters include only fresh sources; nil means no usable data, not zero agents.
+    public static func activeCounts(in sections: [SectionView]) -> [DisplayStatus: Int]? {
+        let fresh = sections.filter { $0.shouldDisplay && !$0.stale && $0.counts != nil }
+        guard !fresh.isEmpty else { return nil }
+        var counts: [DisplayStatus: Int] = [:]
+        for section in fresh {
+            for status in [DisplayStatus.working, .blocked, .done] {
+                if let count = section.counts?[status], count > 0 {
+                    counts[status, default: 0] += count
+                }
+            }
+        }
+        return counts
+    }
 }
 
 /// Per-source state. Not thread-safe; `OverlayModel` serializes access.

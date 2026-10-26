@@ -23,6 +23,8 @@ Stop: zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku me
 
 **Panel.** Na każde źródło jest jedna ciemna karta z niezerowymi licznikami i wierszem każdego agenta. Kolejność: zablokowane, pracujące, zakończone (`done`), nieznane, bezczynne. Wiersz pokazuje rodzaj agenta, katalog projektu (lub `workspace_id`) i opcjonalny tytuł terminala. Panel ma 420 pt szerokości i najwyżej 40% wysokości ekranu, dalej się przewija. Można go przeciągać. Pozycja i widoczność są zapisywane w `$HERDR_PLUGIN_STATE_DIR/panel.json`, a po odłączeniu monitora panel wraca na widoczny ekran. Menu `HSO` pozwala go ukryć lub pokazać. Interfejs jest po angielsku i używa JetBrains Mono, jeśli ten font jest zainstalowany.
 
+**Zwijanie.** Strzałka w nagłówku pierwszej karty zwija panel do małego, przeciąganego paska. Pokazuje on wyłącznie niezerowe sumy: ● pracujący, ⚠ zablokowani, ✓ zakończeni (`done`), ze wszystkich świeżych źródeł. Bezczynni i nieznani są pomijani. Przy braku aktywnych jest „No active agents”, a bez świeżych danych „—”. Liczniki nie deduplikują agentów między źródłami. Strzałka na pasku przywraca pełną listę; wybrany tryb jest zapisywany w `panel.json`.
+
 **Kliknięcie wiersza** aktywuje Ghostty (macOS przełącza na jego Space) i wywołuje `herdr [--machine <alias>] agent focus <pane_id>`. Błąd sygnalizuje dźwiękiem.
 
 **`done`.** Agent ma status `done`, gdy serwer zgłasza `done` albo gdy overlay wykryje wzrost `completion_seq`. Po 10 minutach oznaczenie przechodzi w bezczynny; gdy agent znów pracuje, od razu wraca status pracujący (zablokowany i nieznany też mają pierwszeństwo przed `done`). Pierwszy odczyt, także po błędzie lub wybudzeniu Maca, ustala punkt odniesienia `completion_seq`, więc nie tworzy fałszywych zakończeń, ale jawne `done` serwera pokazuje. Stan jest wyłącznie w pamięci.
@@ -31,7 +33,7 @@ Stop: zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku me
 
 ## Ograniczenia
 
-- Karty są per źródło (sesja lokalna / alias), nie per klient Herdr. Nie ma sumy ani deduplikacji agentów między źródłami.
+- Karty są per źródło (sesja lokalna / alias), nie per klient Herdr. Pełny widok nie sumuje źródeł; żaden widok nie deduplikuje agentów między źródłami.
 - API nie podaje epoki serwera. Restart serwera między dwoma udanymi odczytami jest wykrywany tylko po nowym `terminal_id` lub spadku `completion_seq`.
 - Przy kilku oknach Ghostty to macOS wybiera, które wyjdzie na wierzch. Focus agenta remote zmienia się na serwerze remote; lokalny klient Herdr nie przełącza się sam na widok tej maszyny.
 - Każdy odczyt remote to proces ssh i zdalny `herdr`. Błąd odczytu ukrywa kartę bez rozróżnienia przyczyny. Jeśli połączenia nie da się odnowić bez hasła, wykonaj `herdr machine reconnect`.
