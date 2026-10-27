@@ -1,11 +1,103 @@
 import AppKit
+import ImageIO
 import OverlayCore
+import QuartzCore
 
 
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// Illustrated corgi frames, decoded once from the bundled PNGs.
+private enum CorgiArt {
+    static let frames: [MascotFrame: NSImage] = {
+        var frames: [MascotFrame: NSImage] = [:]
+        let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+        for frame in MascotFrame.allCases {
+            guard let url = Bundle.module.url(forResource: frame.resourceName, withExtension: "png",
+                                              subdirectory: "Corgi"),
+                  let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, options) else {
+                NSLog("Herdr Status Overlay: missing corgi frame %@", frame.resourceName)
+                continue
+            }
+            frames[frame] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        }
+        return frames
+    }()
+}
+
+private final class CorgiView: NSView {
+    static let side: CGFloat = 96
+    private var art: MascotFrame = .sleeping
+    private var lift: CGFloat = 0
+
+    func show(_ art: MascotFrame, lift: CGFloat) {
+        guard art != self.art || lift != self.lift else { return }
+        self.art = art
+        self.lift = lift
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Inset so the highest hop (5 pt) still fits inside the view.
+        CorgiArt.frames[art]?.draw(in: NSRect(x: 3, y: 1 + lift, width: bounds.width - 6, height: bounds.width - 6))
+    }
+}
+
+
+private final class CardBackdropView: NSVisualEffectView {
+    static let tailHeight: CGFloat = 9
+    private let speechTail: Bool
+
+    init(speechTail: Bool, reduceTransparency: Bool) {
+        self.speechTail = speechTail
+        super.init(frame: .zero)
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+        wantsLayer = true
+        if reduceTransparency {
+            state = .inactive
+            layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.97).cgColor
+        } else {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+
+    override func layout() {
+        super.layout()
+        guard let layer else { return }
+        let mask = CAShapeLayer()
+        let path = CGMutablePath()
+        let tail = speechTail ? Self.tailHeight : 0
+        let radius: CGFloat = 10
+        // Unflipped layer coordinates: minY is the bottom edge, where the tail points down at the dog.
+        let rect = NSRect(x: bounds.minX, y: bounds.minY + tail, width: bounds.width, height: bounds.height - tail)
+        if speechTail {
+            let mid = bounds.midX
+            path.move(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+            path.addLine(to: CGPoint(x: mid - 8, y: rect.minY))
+            path.addLine(to: CGPoint(x: mid, y: bounds.minY))
+            path.addLine(to: CGPoint(x: mid + 8, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + radius), control: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX - radius, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+            path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - radius), control: CGPoint(x: rect.minX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+            path.addQuadCurve(to: CGPoint(x: rect.minX + radius, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
+            path.closeSubpath()
+        } else {
+            path.addRoundedRect(in: bounds, cornerWidth: radius, cornerHeight: radius)
+        }
+        mask.path = path
+        layer.mask = mask
+    }
+}
 /// Agent row that reacts to a click without dragging the panel or needing it to be key first.
 private final class ClickableRow: NSStackView {
     var onClick: (() -> Void)?
@@ -28,6 +120,8 @@ private final class ClickableRow: NSStackView {
 final class PanelController: NSObject, NSWindowDelegate {
     private static let width: CGFloat = 420
     private static let margin: CGFloat = 16
+    /// Fixed band under the scrolling cards that holds the expanded-mode mascot.
+    private static let mascotFooter: CGFloat = CorgiView.side + 4
 
     private let panel: NSPanel
     private let scroll = NSScrollView()
@@ -35,6 +129,13 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let stateFile: URL
     private var state: PanelState
     private var rendered: [SectionView]?
+    private let corgi = CorgiView(frame: NSRect(x: 0, y: 0, width: CorgiView.side, height: CorgiView.side))
+    private var animationTimer: Timer?
+    private var mood: MascotMood?
+    private var tick = 0
+    private var mascotCornerConstraints: [NSLayoutConstraint] = []
+    private var scrollBottom: NSLayoutConstraint!
+
     private var adjustingFrame = false
     private var contentWidth: CGFloat = PanelController.width
     /// Called on the main thread when the user clicks an agent row.
@@ -88,8 +189,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         if state.minimized {
             addCompactSummary(sections)
         } else {
+            addCorgiCorner()
             for section in sections { addSection(section) }
         }
+        updateCorgiMood()
         resize()
         updateVisibility()
     }
@@ -98,11 +201,21 @@ final class PanelController: NSObject, NSWindowDelegate {
         let visible = state.visible && !(rendered ?? []).isEmpty
         if visible == panel.isVisible { return }
         if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
+        // The mascot animates only while the panel is on screen.
+        animationTimer?.invalidate()
+        animationTimer = visible ? Timer.scheduledTimer(withTimeInterval: MascotAnimation.tickInterval,
+                                                        repeats: true) { [weak self] _ in
+            self?.updateCorgiMood(advance: true)
+        } : nil
     }
 
     // MARK: Panel setup
 
     private func configurePanel() {
+        corgi.setAccessibilityLabel("Corgi status mascot")
+        corgi.translatesAutoresizingMaskIntoConstraints = false
+        corgi.widthAnchor.constraint(equalToConstant: CorgiView.side).isActive = true
+        corgi.heightAnchor.constraint(equalToConstant: CorgiView.side).isActive = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications]
         panel.hidesOnDeactivate = false
@@ -124,6 +237,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(scroll)
+        scrollBottom = scroll.bottomAnchor.constraint(equalTo: background.bottomAnchor)
 
         let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false
@@ -138,7 +252,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: background.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            scrollBottom,
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
@@ -151,20 +265,61 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     // MARK: Content
 
-    private func makeCard() -> NSStackView {
+    private func makeCard(fillWidth: Bool = true, speechTail: Bool = false) -> NSStackView {
         let card = NSStackView()
         card.appearance = NSAppearance(named: .darkAqua)
         card.orientation = .vertical
         card.alignment = .leading
         card.spacing = 4
-        card.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        card.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10 + (speechTail ? CardBackdropView.tailHeight : 0),
+                                       right: 12)
+        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         card.wantsLayer = true
-        card.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.92).cgColor
+        card.layer?.backgroundColor = NSColor.clear.cgColor
         card.layer?.cornerRadius = 10
+        card.layer?.masksToBounds = true
         card.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(card)
-        card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let backdrop = CardBackdropView(speechTail: speechTail, reduceTransparency: reduceTransparency)
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(backdrop, positioned: .below, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            backdrop.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: card.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: card.bottomAnchor)
+        ])
+        if fillWidth { card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         return card
+    }
+
+    /// Pins the mascot to the panel's bottom-right corner, outside the scroll view, so it never scrolls away.
+    private func addCorgiCorner() {
+        guard let background = panel.contentView else { return }
+        NSLayoutConstraint.deactivate(mascotCornerConstraints)
+        corgi.removeFromSuperview()
+        background.addSubview(corgi)
+        scrollBottom.constant = -Self.mascotFooter
+        mascotCornerConstraints = [
+            corgi.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -8),
+            corgi.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -2)
+        ]
+        NSLayoutConstraint.activate(mascotCornerConstraints)
+    }
+
+    /// A new mood restarts its animation; `advance` steps it unless Reduce Motion asks for a still frame.
+    private func updateCorgiMood(advance: Bool = false) {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let mood = MascotMood.select(in: rendered ?? [], now: MonotonicClock.now())
+        if mood != self.mood {
+            self.mood = mood
+            tick = 0
+            corgi.setAccessibilityLabel("Corgi: \(mood)")
+        } else if advance && !reduceMotion {
+            tick += 1
+        }
+        corgi.show(MascotAnimation.frame(for: mood, tick: tick, reduceMotion: reduceMotion),
+                   lift: CGFloat(MascotAnimation.lift(for: mood, tick: tick, reduceMotion: reduceMotion)))
     }
 
     private func toggleButton() -> NSButton {
@@ -187,15 +342,25 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func addCompactSummary(_ sections: [SectionView]) {
-        let card = makeCard()
+        let card = makeCard(fillWidth: false, speechTail: true)
         let counters = countView(SectionView.activeCounts(in: sections),
                                  order: [.working, .blocked, .done], emptyText: "No active agents")
         let line = NSStackView(views: [toggleButton(), counters])
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 10
-        contentWidth = min(Self.width, (line.fittingSize.width + 24).rounded(.up))
         card.addArrangedSubview(line)
+        stack.removeArrangedSubview(card)
+        NSLayoutConstraint.deactivate(mascotCornerConstraints)
+        scrollBottom.constant = 0
+        card.removeFromSuperview()
+        // Speech bubble above the dog, its tail pointing down at the dog's head.
+        let row = NSStackView(views: [card, corgi])
+        row.orientation = .vertical
+        row.alignment = .centerX
+        row.spacing = 0
+        stack.addArrangedSubview(row)
+        contentWidth = min(Self.width, (row.fittingSize.width + 16).rounded(.up))
         let unavailable = sections.filter(\.stale).map(\.label)
         card.toolTip = unavailable.isEmpty ? counters.toolTip
             : "Fresh sources only. Unavailable: " + unavailable.joined(separator: ", ")
@@ -353,7 +518,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         defer { adjustingFrame = false }
         stack.layoutSubtreeIfNeeded()
         guard let screen = destination ?? currentScreen else { return }
-        let height = min(stack.fittingSize.height, screen.visibleFrame.height * 0.4).rounded(.up)
+        let footer = state.minimized ? 0 : Self.mascotFooter
+        let height = min(stack.fittingSize.height + footer, screen.visibleFrame.height * 0.4).rounded(.up)
         var frame = panel.frame
         frame.origin.y = frame.maxY - height
         frame.size = NSSize(width: contentWidth, height: max(height, 40))

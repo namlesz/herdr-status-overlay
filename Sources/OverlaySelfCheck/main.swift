@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import CoreGraphics
+import ImageIO
 import OverlayCore
 
 // Headless test suite: fixtures and /bin/sh fakes only. No Herdr, SSH or GUI.
@@ -114,6 +115,7 @@ do {
 
     step("idle", 135)
     check(!tracker.isPending(key, now: 0), "baseline idle is not a completion")
+    check(tracker.completionEventAt(key) == nil, "startup baseline has no celebration event")
     step("working", nil)
     check(!tracker.isPending(key, now: 0), "working without seq keeps marker")
     step("idle", 135)
@@ -140,6 +142,26 @@ do {
     cold.apply(parse([agent("w1:p1", "idle")]), now: 0)
     cold.apply(parse([agent("w1:p1", "idle", seq: 7)]), now: 0)
     check(!cold.isPending(key, now: 0), "first marker without observed working is not a completion")
+
+    check(cold.completionEventAt(key) == nil, "first marker without observed work has no event")
+
+    var serverTransition = CompletionTracker()
+    serverTransition.apply(parse([agent("w1:p1", "idle")]), now: 10)
+    serverTransition.apply(parse([agent("w1:p1", "done")]), now: 20)
+    check(serverTransition.completionEventAt(key) == 20, "known continuous transition to server done emits event")
+    serverTransition.rebaseline()
+    check(serverTransition.completionEventAt(key) == nil, "recovery clears celebration event")
+    serverTransition.apply(parse([agent("w1:p1", "done")]), now: 30)
+    check(serverTransition.completionEventAt(key) == nil, "recovery server done does not re-emit")
+
+
+    var doneRegression = CompletionTracker()
+    doneRegression.apply(parse([agent("w1:p1", "done", seq: 8)]), now: 10)
+    doneRegression.apply(parse([agent("w1:p1", "done", seq: 4)]), now: 20)
+    check(doneRegression.isPending(key, now: 20), "regressed sequence renews existing server-done display")
+    check(doneRegression.completionEventAt(key) == nil, "sequence regression does not celebrate")
+    check(!doneRegression.isPending(key, now: 20 + SourceConfig.finishedTTL),
+          "regressed server-done display expires from its renewed timestamp")
 
     var earlyMarker = CompletionTracker()
     earlyMarker.apply(parse([agent("w1:p1", "idle")]), now: 0)
@@ -171,6 +193,74 @@ do {
     sticky.apply(parse([agent("w1:p1", "idle", seq: 1)]), now: 0)
     for seq in 2...5 { sticky.apply(parse([agent("w1:p1", "idle", seq: NSNumber(value: seq))]), now: 0) }
     check(sticky.isPending(key, now: 0), "one pending record per agent, not history")
+
+
+    var moodStore = Store(sources: [.local(executable: "/fake")])
+    func moodSnapshot(_ agents: [[String: Any]], at time: Double) -> [SectionView] {
+        moodStore.succeed("local", generation: moodStore.begin("local"),
+                          agents: parse(agents), now: seconds(time))
+        return moodStore.view(now: seconds(time))
+    }
+
+    var moodViews = moodSnapshot([agent("w1:p1", "working", seq: 1)], at: 1)
+    check(MascotMood.select(in: moodViews, now: seconds(1)) == .working, "working selects attentive mascot")
+    moodViews = moodSnapshot([agent("w1:p1", "idle", seq: 1)], at: 2)
+    check(MascotMood.select(in: moodViews, now: seconds(2)) == .sleeping, "fresh idle selects sleeping mascot")
+    moodViews = moodSnapshot([agent("w1:p1", "idle", seq: 2), agent("w1:p2", "blocked")], at: 3)
+    check(MascotMood.select(in: moodViews, now: seconds(3)) == .blocked, "blocked takes priority over celebration")
+    moodViews = moodSnapshot([agent("w1:p1", "idle", seq: 2)], at: 4)
+    check(MascotMood.select(in: moodViews, now: seconds(4)) == .celebrating, "completion marker selects celebration")
+    check(MascotMood.select(in: moodViews, now: seconds(7)) == .sleeping, "celebration expires after three seconds")
+    moodStore.fail("local", generation: moodStore.begin("local"), failure: .timeout)
+    check(MascotMood.select(in: moodStore.view(now: seconds(8)), now: seconds(8)) == .unavailable,
+          "stale-only sources select unavailable mascot")
+
+    // Working: 4 s of 8 fps running, then 2 s of sniffing at half speed, then running again.
+    let tick = MascotAnimation.tickInterval
+    check(MascotAnimation.frame(for: .working, tick: 0, reduceMotion: false) == .run0, "work starts running")
+    check((0..<4).map { MascotAnimation.frame(for: .working, tick: $0, reduceMotion: false) }
+          == [.run0, .run1, .run2, .run3], "run cycle steps through four frames")
+    let sniffStart = Int(4 / tick)
+    check(MascotAnimation.frame(for: .working, tick: sniffStart - 1, reduceMotion: false) == .run3,
+          "running lasts four seconds")
+    check((0..<8).map { MascotAnimation.frame(for: .working, tick: sniffStart + $0, reduceMotion: false) }
+          == [.sniff0, .sniff0, .sniff1, .sniff1, .sniff2, .sniff2, .sniff3, .sniff3], "sniff cycle at half speed")
+    check(MascotAnimation.frame(for: .working, tick: Int(6 / tick), reduceMotion: false) == .run0,
+          "running resumes after two seconds of sniffing")
+    for t in [-5, 0, 7, 40, 1_000_003] {
+        check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: true) == .run3,
+              "Reduce Motion keeps working on one still frame")
+        check(MascotFrame.allCases.contains(MascotAnimation.frame(for: .working, tick: t, reduceMotion: false)),
+              "any tick selects a bundled frame")
+    }
+    for mood in [MascotMood.sleeping, .blocked, .unavailable, .celebrating] {
+        check(Set((0..<48).map { MascotAnimation.frame(for: mood, tick: $0, reduceMotion: false) }).count == 1,
+              "\(mood) keeps its single state frame")
+        check((0..<48).allSatisfy { MascotAnimation.lift(for: mood, tick: $0, reduceMotion: true) == 0 },
+              "Reduce Motion stops \(mood) bobbing")
+        check((0..<48).allSatisfy { (0...5).contains(MascotAnimation.lift(for: mood, tick: $0, reduceMotion: false)) },
+              "\(mood) lift stays inside the view inset")
+    }
+
+    // Every selectable frame ships as a transparent PNG with a clear perimeter.
+    let resources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("../OverlayApp/Resources/Corgi").standardizedFileURL
+    for frame in MascotFrame.allCases {
+        let url = resources.appendingPathComponent(frame.resourceName + ".png")
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            check(false, "\(frame.resourceName).png loads"); continue
+        }
+        var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let context = CGContext(data: &pixels, width: image.width, height: image.height, bitsPerComponent: 8,
+                                bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let edge = (0..<image.width).flatMap { [($0, 0), ($0, image.height - 1), (0, $0), (image.width - 1, $0)] }
+        check(image.width == image.height && image.alphaInfo != .none, "\(frame.resourceName).png is square with alpha")
+        check(edge.allSatisfy { pixels[($0.1 * image.width + $0.0) * 4 + 3] == 0 },
+              "\(frame.resourceName).png has a transparent perimeter")
+    }
 }
 
 // MARK: Panel preferences and compact counters

@@ -11,6 +11,7 @@ public struct CompletionTracker {
         var sawWorking: Bool
         var finishedAt: UInt64?
         var serverDone: Bool
+        var completionEventAt: UInt64?
     }
 
     private(set) var tracks: [AgentKey: Track] = [:]
@@ -18,7 +19,10 @@ public struct CompletionTracker {
 
     public init() {}
 
-    public mutating func rebaseline() { baselined = false }
+    public mutating func rebaseline() {
+        baselined = false
+        for key in Array(tracks.keys) { tracks[key]?.completionEventAt = nil }
+    }
 
     public mutating func clear() {
         tracks = [:]
@@ -32,13 +36,15 @@ public struct CompletionTracker {
             let working = agent.status == .working
             let serverDone = agent.status == .done
             let regressed = isRegression(agent.completionSeq, previous?.seq)
-            var track = previous ?? Track(seq: nil, sawWorking: false, finishedAt: nil, serverDone: false)
+            var track = previous ?? Track(seq: nil, sawWorking: false, finishedAt: nil,
+                                          serverDone: false, completionEventAt: nil)
             if regressed { track.finishedAt = nil }
-            if baselined && previous != nil && !regressed, let seq = agent.completionSeq,
-               track.seq.map({ seq > $0 }) ?? track.sawWorking {
-                track.finishedAt = now
-            }
-            if serverDone && (previous?.serverDone != true || regressed) { track.finishedAt = now }
+            let seqCompleted = baselined && previous != nil && !regressed &&
+                agent.completionSeq.map { seq in track.seq.map { seq > $0 } ?? track.sawWorking } == true
+            let serverTransition = serverDone && !track.serverDone
+            let serverCompleted = baselined && previous != nil && !regressed && serverTransition
+            if seqCompleted || (serverDone && (previous?.serverDone != true || regressed)) { track.finishedAt = now }
+            if seqCompleted || serverCompleted { track.completionEventAt = now }
             if working { track.finishedAt = nil }
             track.sawWorking = working || (baselined && !regressed && track.sawWorking)
             track.seq = agent.completionSeq ?? (regressed ? nil : track.seq)
@@ -53,6 +59,8 @@ public struct CompletionTracker {
         guard let finishedAt = tracks[key]?.finishedAt else { return false }
         return elapsed(since: finishedAt, now: now) < SourceConfig.finishedTTL
     }
+
+    public func completionEventAt(_ key: AgentKey) -> UInt64? { tracks[key]?.completionEventAt }
 
     public func display(_ agent: AgentRecord, now: UInt64) -> DisplayStatus {
         switch agent.status {

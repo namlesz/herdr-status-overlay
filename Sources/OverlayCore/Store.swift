@@ -10,6 +10,8 @@ public struct RowView: Equatable {
     public let label: String
     public let place: String?
     public let activity: String?
+    /// Continuous-fresh completion event timestamp, retained across coalesced UI delivery.
+    public let completionEventAt: UInt64?
 }
 
 public struct SectionView: Equatable {
@@ -117,7 +119,8 @@ public struct Store {
                 counts[status, default: 0] += 1
                 rows.append(RowView(sourceID: source.config.id, key: agent.key, status: status,
                                     label: agent.label,
-                                    place: agent.place, activity: agent.activity))
+                                    place: agent.place, activity: agent.activity,
+                                    completionEventAt: source.tracker.completionEventAt(agent.key)))
             }
             rows.sort {
                 let order: [DisplayStatus] = [.blocked, .working, .done, .unknown, .idle]
