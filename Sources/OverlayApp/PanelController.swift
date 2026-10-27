@@ -82,7 +82,7 @@ private final class ThoughtBubbleView: NSView {
                                          tx: direction.extendsLeft ? 0 : bounds.width,
                                          ty: direction.extendsUp ? 0 : bounds.height)
         context.concatenate(transform)
-        context.addPath(ThoughtBubble.path(in: bounds, tailX: bounds.maxX - CorgiView.side / 2 - 8))
+        context.addPath(ThoughtBubble.path(in: bounds, tailX: bounds.maxX - 16))
         context.fillPath()
     }
 }
@@ -446,8 +446,14 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func addCompactSummary(_ sections: [SectionView]) {
+        let counts = SectionView.activeCounts(in: sections)
+        if state.autoHide, counts?.isEmpty == true {
+            addCorgiCorner()
+            contentWidth = CorgiView.side + 16
+            return
+        }
         let card = makeCard(fillWidth: false, speechTail: true)
-        let counters = countView(SectionView.activeCounts(in: sections),
+        let counters = countView(counts,
                                  order: [.working, .blocked, .done], emptyText: "No active agents")
         // Measure before attaching to the old panel width; stack fitting sizes can retain that width.
         let counterWidth = counters.fittingSize.width
@@ -463,10 +469,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         addCorgiCorner()
         let padding: CGFloat = state.autoHide ? 40 : 24
         let controls = state.autoHide ? 0 : button.fittingSize.width + line.spacing
-        let bubbleWidth = min(Self.width, ceil(counterWidth + padding + controls))
+        let sideInset: CGFloat = state.autoHide ? CorgiView.side / 2 : 0
+        let bubbleWidth = min(Self.width - sideInset, ceil(counterWidth + padding + controls))
         card.widthAnchor.constraint(equalToConstant: bubbleWidth).isActive = true
-        contentWidth = max(CorgiView.side + 16, bubbleWidth)
-        stack.alignment = state.direction.extendsLeft ? .trailing : .leading
+        contentWidth = max(CorgiView.side + 16, bubbleWidth + sideInset)
+        let alignLeft = state.autoHide ? state.direction.extendsLeft : !state.direction.extendsLeft
+        stack.alignment = alignLeft ? .leading : .trailing
     }
 
     private func addSection(_ section: SectionView) {

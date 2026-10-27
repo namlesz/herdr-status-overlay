@@ -99,6 +99,17 @@ struct OverlayLayoutCheck {
             for direction in PanelDirection.allCases {
                 controller.setDirection(direction)
                 require(dogFrame() == before, "direction changes keep mascot fixed away from screen edges")
+                if autoHide {
+                    let bubble = cloud(in: root)!
+                    let bubbleFrame = panel.convertToScreen(bubble.convert(bubble.bounds, to: nil))
+                    let dog = dogFrame()
+                    require(direction.extendsLeft ? bubbleFrame.midX < dog.midX : bubbleFrame.midX > dog.midX,
+                            "cloud center must be on the selected horizontal side of corgi: \(direction)")
+                    require(abs(bubbleFrame.midX - dog.midX) <= bubbleFrame.width / 2,
+                            "cloud stays close to the mascot center")
+                    require(direction.extendsUp ? bubbleFrame.minY >= dog.maxY : bubbleFrame.maxY <= dog.minY,
+                            "cloud must be on the selected vertical side of corgi: \(direction)")
+                }
                 controller.saveState()
                 let restored = PanelController(stateFile: url)
                 restored.render(store.view(now: seconds(1)))
@@ -116,6 +127,28 @@ struct OverlayLayoutCheck {
                     }
                 }
             }
+        }
+        controller.setAutoHide(true)
+        for direction in PanelDirection.allCases {
+            controller.setDirection(direction)
+            panel.setFrameOrigin(NSPoint(x: visible.midX - 210, y: visible.midY - 100))
+            controller.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
+            let before = dogFrame()
+            for status in ["idle", "working", "idle"] {
+                let data = try JSONSerialization.data(withJSONObject: [
+                    "result": ["agents": [["pane_id": "quiet", "agent_status": status]]]
+                ])
+                store.succeed("local", generation: store.begin("local"),
+                              agents: try AgentListParser.parse(data), now: seconds(1))
+                controller.render(store.view(now: seconds(1)))
+                require(dogFrame() == before, "hiding and restoring cloud keeps mascot fixed")
+                require((cloud(in: root) == nil) == (status == "idle"),
+                        "idle-only auto-hide shows just corgi; active counters restore cloud")
+                require(!panel.isVisible, "idle layout checks never display a window")
+            }
+            controller.render(store.view(now: seconds(20)))
+            root.layoutSubtreeIfNeeded()
+            require(cloud(in: root) != nil, "stale data stays distinguishable from no active agents")
         }
         print("Overlay AppKit layout checks passed (four directions, dynamic cloud, restoration, both scrollbar styles and edge dragging).")
     }
