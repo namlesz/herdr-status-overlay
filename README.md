@@ -25,7 +25,7 @@ Stop: zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku me
 
 **Zwijanie.** Strzałka w nagłówku pierwszej karty zwija panel do małego, przeciąganego paska. Pokazuje on wyłącznie niezerowe sumy: ● pracujący, ⚠ zablokowani, ✓ zakończeni (`done`), ze wszystkich świeżych źródeł. Bezczynni i nieznani są pomijani. Przy braku aktywnych jest „No active agents”, a bez świeżych danych „—”. Liczniki nie deduplikują agentów między źródłami. Strzałka na pasku przywraca pełną listę; wybrany tryb jest zapisywany w `panel.json`.
 
-**Auto-hide.** Opcja „Auto-hide” w menu `HSO` zostawia na ekranie samego corgiego, bez liczników. Najazd rozwija pełną listę bez przejmowania fokusu; opuszczenie panelu chowa ją po około 0,4 s. Powrót kursora anuluje chowanie. Piesek pozostaje na miejscu: tryb rezerwuje przestrzeń na rozwinięcie w górę i w lewo, dlatego blisko górnej/lewej krawędzi pozycja jest korygowana. Ustawienie jest zapisywane w `panel.json`, domyślnie wyłączone; po wyłączeniu wraca wcześniejszy tryb ręczny.
+**Auto-hide.** Opcja „Auto-hide” w menu `HSO` zostawia na ekranie corgiego z kreskówkowym dymkiem nad głową, zawierającym te same liczniki co tryb zminimalizowany, bez strzałki. Dymek ma falowany obrys chmurki, dwa bąbelki prowadzące do corgiego, białe tło o kryciu 22% i cieniowane napisy; przy systemowym Reduce Transparency jest biały z ciemnymi napisami. Najazd na pieska lub dymek rozwija pełną listę bez przejmowania fokusu; opuszczenie panelu chowa ją po około 0,4 s. Powrót kursora anuluje chowanie. Piesek pozostaje na miejscu: tryb rezerwuje przestrzeń na rozwinięcie w górę i w lewo, dlatego blisko górnej/lewej krawędzi pozycja jest korygowana. Ustawienie jest zapisywane w `panel.json`, domyślnie wyłączone; po wyłączeniu wraca wcześniejszy tryb ręczny.
 
 **Maskotka.** Rysunkowy corgi (96 pt) pokazuje stan pod dymkiem ze zwiniętymi licznikami i w prawym dolnym rogu rozwiniętego panelu, poza przewijanymi kartami: śpi przy bezczynnych agentach z unoszącymi się i zanikającymi literami „z”, „z”, „Z” nad głową, podczas pracy na zmianę biegnie w miejscu (4 s) i węszy (2 s), martwi się przy blokadzie, a przy braku świeżych danych przekrzywia głowę. Po nowym zakończeniu świętuje przez 3 s (blokada ma pierwszeństwo). macOS Reduce Motion zatrzymuje animację na jednej klatce; gdy panel jest ukryty, animacja nie działa. Klatki w `Sources/OverlayApp/Resources/Corgi` generuje `swift scripts/prepare-corgi-assets.swift` z arkuszy w `Art/corgi`.
 **Kliknięcie wiersza** aktywuje Ghostty (macOS przełącza na jego Space) i wywołuje `herdr [--machine <alias>] agent focus <pane_id>`. Błąd sygnalizuje dźwiękiem.
@@ -47,6 +47,7 @@ Stop: zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku me
 
 ```sh
 swift run OverlaySelfCheck   # testy headless (kod wyjścia 0 = OK)
+sh scripts/check-overlay-layout.sh  # AppKit: zwijanie, paski przewijania, przesuwanie przy krawędziach; okno ukryte
 ```
 
 Command Line Tools nie zawierają XCTest, dlatego testy są osobnym programem. Używają fikstur i fałszywych procesów `/bin/sh`, bez Herdr, SSH ani GUI.

@@ -17,6 +17,23 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String, line: Int = #li
     }
 }
 
+do {
+    check(ThoughtBubble.opacity == 0.22, "thought cloud is ten percentage points more opaque")
+    for width in [CGFloat(112), 240, 420] {
+        let bounds = CGRect(x: 0, y: 0, width: width, height: 58)
+        let tailX = width - 48
+        let cloud = ThoughtBubble.path(in: bounds, tailX: tailX)
+        check(bounds.contains(cloud.boundingBoxOfPath), "cloud and bubbles stay within their view")
+        check(cloud.contains(CGPoint(x: width / 2, y: 38)), "cloud contains counter text center")
+        check(!cloud.contains(CGPoint(x: 1, y: 57)) && !cloud.contains(CGPoint(x: width - 1, y: 57)),
+              "thought cloud has transparent corners instead of a rectangular backdrop")
+        check(cloud.contains(CGPoint(x: tailX + 5.5, y: 3.5))
+              && cloud.contains(CGPoint(x: tailX + 1, y: 12)), "two thought bubbles point towards corgi")
+        check(!cloud.contains(CGPoint(x: tailX + 4, y: 6.5)), "thought bubbles are separated by transparent space")
+    }
+    check(ThoughtBubble.path(in: .zero, tailX: 0).isEmpty, "empty cloud layout is safe")
+}
+
 func json(_ agents: [[String: Any]], extra: [String: Any] = [:]) -> Data {
     var root: [String: Any] = ["id": "x", "result": ["agents": agents]]
     root.merge(extra) { a, _ in a }
@@ -482,6 +499,15 @@ do {
                                                        expandedWidth: 420, in: screen)
             check(restored == dog, "saving expanded and restoring collapsed keeps the dog at the same position")
             check(PanelGeometry.autoHideFrame(dog, expandedWidth: 420, in: screen) == dog, "auto-hide geometry is stable")
+            for bubbleSize in [CGSize(width: 112, height: 145), CGSize(width: 240, height: 145)] {
+                let bubble = PanelGeometry.autoHideFrame(PanelGeometry.bottomRightFrame(size: bubbleSize, of: dog),
+                                                         expandedWidth: 420, in: screen)
+                check(bubble.maxX == full.maxX && bubble.minY == full.minY,
+                      "bubble and expanded list keep the mascot in the same corner")
+                let savedDog = PanelGeometry.bottomRightFrame(size: dog.size, of: bubble)
+                let restoredBubble = PanelGeometry.bottomRightFrame(size: bubble.size, of: savedDog)
+                check(restoredBubble == bubble, "canonical dog footprint restores the taller, wider bubble without shifting")
+            }
         }
     }
     let compact = CGRect(x: 1700, y: 1000, width: 160, height: 40)

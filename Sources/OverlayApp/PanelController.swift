@@ -61,6 +61,25 @@ private final class CorgiView: NSView {
 }
 
 
+private final class ThoughtBubbleView: NSView {
+    private let reduceTransparency: Bool
+
+    init(reduceTransparency: Bool) {
+        self.reduceTransparency = reduceTransparency
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.setFillColor(NSColor.white.withAlphaComponent(reduceTransparency ? 1 : ThoughtBubble.opacity).cgColor)
+        context.addPath(ThoughtBubble.path(in: bounds, tailX: bounds.maxX - CorgiView.side / 2))
+        context.fillPath()
+    }
+}
+
 private final class CardBackdropView: NSVisualEffectView {
     static let tailHeight: CGFloat = 9
     private let speechTail: Bool
@@ -223,15 +242,12 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func rebuildContent() {
         let sections = rendered ?? []
+        // A collapsed cloud has no scrolling content; legacy scrollers otherwise leave a clipped gutter.
+        scroll.hasVerticalScroller = !(state.autoHide && compact)
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         contentWidth = Self.width
         if compact {
-            if state.autoHide {
-                addCorgiCorner()
-                contentWidth = CorgiView.side + 16
-            } else {
-                addCompactSummary(sections)
-            }
+            addCompactSummary(sections)
         } else {
             addCorgiCorner()
             for section in sections { addSection(section) }
@@ -313,12 +329,16 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func makeCard(fillWidth: Bool = true, speechTail: Bool = false) -> NSStackView {
         let card = NSStackView()
-        card.appearance = NSAppearance(named: .darkAqua)
+        let transparentBubble = speechTail && state.autoHide
+        card.appearance = NSAppearance(named: transparentBubble && NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+                                      ? .aqua : .darkAqua)
         card.orientation = .vertical
         card.alignment = .leading
         card.spacing = 4
-        card.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10 + (speechTail ? CardBackdropView.tailHeight : 0),
-                                       right: 12)
+        let padding: CGFloat = transparentBubble ? 20 : 12
+        let tail = transparentBubble ? ThoughtBubble.tailHeight : (speechTail ? CardBackdropView.tailHeight : 0)
+        card.edgeInsets = NSEdgeInsets(top: transparentBubble ? 12 : 10, left: padding,
+                                       bottom: (transparentBubble ? 12 : 10) + tail, right: padding)
         let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         card.wantsLayer = true
         card.layer?.backgroundColor = NSColor.clear.cgColor
@@ -326,7 +346,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         card.layer?.masksToBounds = true
         card.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(card)
-        let backdrop = CardBackdropView(speechTail: speechTail, reduceTransparency: reduceTransparency)
+        let backdrop: NSView = transparentBubble
+            ? ThoughtBubbleView(reduceTransparency: reduceTransparency)
+            : CardBackdropView(speechTail: speechTail, reduceTransparency: reduceTransparency)
         backdrop.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(backdrop, positioned: .below, relativeTo: nil)
         NSLayoutConstraint.activate([
@@ -398,6 +420,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         line.alignment = .centerY
         line.spacing = 10
         card.addArrangedSubview(line)
+        let unavailable = sections.filter(\.stale).map(\.label)
+        card.toolTip = unavailable.isEmpty ? counters.toolTip
+            : "Fresh sources only. Unavailable: " + unavailable.joined(separator: ", ")
+        if state.autoHide {
+            addCorgiCorner()
+            contentWidth = min(Self.width, max(CorgiView.side + 16, line.fittingSize.width + 40))
+            card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            return
+        }
         stack.removeArrangedSubview(card)
         NSLayoutConstraint.deactivate(mascotCornerConstraints)
         scrollBottom.constant = 0
@@ -409,9 +440,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         row.spacing = 0
         stack.addArrangedSubview(row)
         contentWidth = min(Self.width, (row.fittingSize.width + 16).rounded(.up))
-        let unavailable = sections.filter(\.stale).map(\.label)
-        card.toolTip = unavailable.isEmpty ? counters.toolTip
-            : "Fresh sources only. Unavailable: " + unavailable.joined(separator: ", ")
     }
 
     private func addSection(_ section: SectionView) {
@@ -552,6 +580,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         field.maximumNumberOfLines = 1
         field.lineBreakMode = .byTruncatingTail
         field.widthAnchor.constraint(lessThanOrEqualToConstant: Self.width - 30).isActive = true
+        if state.autoHide && compact && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black
+            shadow.shadowBlurRadius = 2
+            let value = NSMutableAttributedString(attributedString: field.attributedStringValue)
+            value.addAttribute(.shadow, value: shadow, range: NSRange(location: 0, length: value.length))
+            field.attributedStringValue = value
+        }
         return field
     }
 
@@ -579,13 +615,21 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.setFrame(clamped(frame, to: screen), display: true)
     }
 
+    private func restingSize(in visible: NSRect) -> NSSize {
+        NSSize(width: min(CorgiView.side + 16, visible.width),
+               height: min(Self.mascotFooter, visible.height * 0.4))
+    }
+
     private func placeFromState() {
         let saved = NSScreen.screens.first { number(of: $0) == state.screen }
         guard let screen = saved ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let visible = screen.visibleFrame
         var frame = panel.frame
         if saved != nil, let left = state.left, let top = state.top {
-            frame.origin = NSPoint(x: visible.minX + left, y: visible.maxY - top - frame.height)
+            let size = state.autoHide ? restingSize(in: visible) : frame.size
+            let savedFrame = NSRect(x: visible.minX + left, y: visible.maxY - top - size.height,
+                                    width: size.width, height: size.height)
+            frame = PanelGeometry.bottomRightFrame(size: frame.size, of: savedFrame)
         } else {
             frame.origin = NSPoint(x: visible.maxX - frame.width - Self.margin,
                                    y: visible.maxY - frame.height - Self.margin)
@@ -610,9 +654,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         state.screen = number(of: screen)
         // Startup is always collapsed: persist that footprint even while the list is open.
         let frame = state.autoHide
-            ? PanelGeometry.bottomRightFrame(size: NSSize(width: min(CorgiView.side + 16, visible.width),
-                                                          height: min(Self.mascotFooter, visible.height * 0.4)),
-                                             of: panel.frame)
+            ? PanelGeometry.bottomRightFrame(size: restingSize(in: visible), of: panel.frame)
             : panel.frame
         state.left = Double(frame.minX - visible.minX)
         state.top = Double(visible.maxY - frame.maxY)
