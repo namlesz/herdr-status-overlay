@@ -32,16 +32,31 @@ private final class CorgiView: NSView {
     private var art: MascotFrame = .sleeping
     private var lift: CGFloat = 0
 
-    func show(_ art: MascotFrame, lift: CGFloat) {
-        guard art != self.art || lift != self.lift else { return }
+    private var sleepPhases: [Double] = []
+
+    func show(_ art: MascotFrame, lift: CGFloat, sleepPhases: [Double]) {
+        guard art != self.art || lift != self.lift || sleepPhases != self.sleepPhases else { return }
         self.art = art
         self.lift = lift
+        self.sleepPhases = sleepPhases
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         // Inset so the highest hop (5 pt) still fits inside the view.
         CorgiArt.frames[art]?.draw(in: NSRect(x: 3, y: 1 + lift, width: bounds.width - 6, height: bounds.width - 6))
+        for phase in sleepPhases {
+            let p = CGFloat(phase)
+            let text = p < 0.6 ? "z" : "Z"
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.5)
+            shadow.shadowBlurRadius = 2
+            (text as NSString).draw(at: NSPoint(x: 56 + 17 * p + 3 * sin(p * .pi * 2), y: 48 + 28 * p),
+                                   withAttributes: [.font: NSFont.systemFont(ofSize: 10 + 9 * p, weight: .bold),
+                                                    .foregroundColor: NSColor(calibratedRed: 0.78, green: 0.88, blue: 1,
+                                                                              alpha: sin(p * .pi)),
+                                                    .shadow: shadow])
+        }
     }
 }
 
@@ -131,6 +146,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var rendered: [SectionView]?
     private let corgi = CorgiView(frame: NSRect(x: 0, y: 0, width: CorgiView.side, height: CorgiView.side))
     private var animationTimer: Timer?
+    private var hover = AutoHideHover()
+    private var compact: Bool { state.showsCompact(hovered: hover.expanded) }
     private var mood: MascotMood?
     private var tick = 0
     private var mascotCornerConstraints: [NSLayoutConstraint] = []
@@ -159,6 +176,28 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// User preference, independent of automatic hiding when no cards are available.
     var isVisibilityEnabled: Bool { state.visible }
 
+    var isAutoHideEnabled: Bool { state.autoHide }
+
+    func setAutoHide(_ enabled: Bool) {
+        state.autoHide = enabled
+        hover = AutoHideHover()
+        rebuildContent()
+        recordPosition()
+        saveState()
+    }
+
+    private func updateHover() {
+        guard state.autoHide else { return }
+        // Keep the panel open throughout dragging, including the native window-tracking loop.
+        let inside = panel.frame.contains(NSEvent.mouseLocation)
+            || (hover.expanded && NSEvent.pressedMouseButtons != 0)
+        if hover.update(inside: inside, now: ProcessInfo.processInfo.systemUptime) {
+            rebuildContent()
+            recordPosition()
+            saveState()
+        }
+    }
+
     func restoreVisibility() { setVisible(state.visible) }
 
     /// Never makes the panel key or activates the app.
@@ -186,8 +225,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         let sections = rendered ?? []
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         contentWidth = Self.width
-        if state.minimized {
-            addCompactSummary(sections)
+        if compact {
+            if state.autoHide {
+                addCorgiCorner()
+                contentWidth = CorgiView.side + 16
+            } else {
+                addCompactSummary(sections)
+            }
         } else {
             addCorgiCorner()
             for section in sections { addSection(section) }
@@ -201,11 +245,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         let visible = state.visible && !(rendered ?? []).isEmpty
         if visible == panel.isVisible { return }
         if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
+        if !visible { hover = AutoHideHover(); rebuildContent() }
         // The mascot animates only while the panel is on screen.
         animationTimer?.invalidate()
         animationTimer = visible ? Timer.scheduledTimer(withTimeInterval: MascotAnimation.tickInterval,
                                                         repeats: true) { [weak self] _ in
             self?.updateCorgiMood(advance: true)
+            self?.updateHover()
         } : nil
     }
 
@@ -319,7 +365,8 @@ final class PanelController: NSObject, NSWindowDelegate {
             tick += 1
         }
         corgi.show(MascotAnimation.frame(for: mood, tick: tick, reduceMotion: reduceMotion),
-                   lift: CGFloat(MascotAnimation.lift(for: mood, tick: tick, reduceMotion: reduceMotion)))
+                   lift: CGFloat(MascotAnimation.lift(for: mood, tick: tick, reduceMotion: reduceMotion)),
+                   sleepPhases: mood == .sleeping ? MascotAnimation.sleepPhases(tick: tick, reduceMotion: reduceMotion) : [])
     }
 
     private func toggleButton() -> NSButton {
@@ -328,6 +375,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                                             accessibilityDescription: title)!,
                               target: self, action: #selector(toggleMinimized))
         button.isBordered = false
+        button.isHidden = state.autoHide
         button.contentTintColor = .secondaryLabelColor
         button.toolTip = title
         button.setAccessibilityLabel(title)
@@ -518,10 +566,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         defer { adjustingFrame = false }
         stack.layoutSubtreeIfNeeded()
         guard let screen = destination ?? currentScreen else { return }
-        let footer = state.minimized ? 0 : Self.mascotFooter
+        let footer = compact && !state.autoHide ? 0 : Self.mascotFooter
         let height = min(stack.fittingSize.height + footer, screen.visibleFrame.height * 0.4).rounded(.up)
         var frame = panel.frame
-        frame.origin.y = frame.maxY - height
+        if state.autoHide {
+            // Both modes pin the dog at bottom-right; expand upwards and leftwards.
+            frame = PanelGeometry.bottomRightFrame(size: NSSize(width: contentWidth, height: max(height, 40)), of: frame)
+        } else {
+            frame.origin.y = frame.maxY - max(height, 40)
+        }
         frame.size = NSSize(width: contentWidth, height: max(height, 40))
         panel.setFrame(clamped(frame, to: screen), display: true)
     }
@@ -542,7 +595,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func clamped(_ frame: NSRect, to screen: NSScreen) -> NSRect {
-        PanelGeometry.clamp(frame, to: screen.visibleFrame)
+        state.autoHide
+            ? PanelGeometry.autoHideFrame(frame, expandedWidth: Self.width, in: screen.visibleFrame)
+            : PanelGeometry.clamp(frame, to: screen.visibleFrame)
     }
 
     private func number(of screen: NSScreen) -> UInt32? {
@@ -553,8 +608,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard let screen = currentScreen else { return }
         let visible = screen.visibleFrame
         state.screen = number(of: screen)
-        state.left = Double(panel.frame.minX - visible.minX)
-        state.top = Double(visible.maxY - panel.frame.maxY)
+        // Startup is always collapsed: persist that footprint even while the list is open.
+        let frame = state.autoHide
+            ? PanelGeometry.bottomRightFrame(size: NSSize(width: min(CorgiView.side + 16, visible.width),
+                                                          height: min(Self.mascotFooter, visible.height * 0.4)),
+                                             of: panel.frame)
+            : panel.frame
+        state.left = Double(frame.minX - visible.minX)
+        state.top = Double(visible.maxY - frame.maxY)
     }
 
     func windowDidMove(_ notification: Notification) {

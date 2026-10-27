@@ -242,6 +242,19 @@ do {
               "\(mood) lift stays inside the view inset")
     }
 
+    let stillSleep = MascotAnimation.sleepPhases(tick: 0, reduceMotion: true)
+    for t in [-5, 0, 1, 23, 24, 1_000_003] {
+        let phases = MascotAnimation.sleepPhases(tick: t, reduceMotion: false)
+        check(phases.count == 3 && Set(phases).count == 3 && phases.allSatisfy { (0..<1).contains($0) },
+              "three staggered sleep letters remain inside their animation cycle")
+        check(MascotAnimation.sleepPhases(tick: t, reduceMotion: true) == stillSleep,
+              "Reduce Motion freezes sleep letters")
+    }
+    check(MascotAnimation.sleepPhases(tick: 0, reduceMotion: false)
+          != MascotAnimation.sleepPhases(tick: 1, reduceMotion: false), "sleep letters animate on each tick")
+    check(MascotAnimation.sleepPhases(tick: 0, reduceMotion: false)
+          == MascotAnimation.sleepPhases(tick: 24, reduceMotion: false), "sleep letters loop every three seconds")
+
     // Every selectable frame ships as a transparent PNG with a clear perimeter.
     let resources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         .appendingPathComponent("../OverlayApp/Resources/Corgi").standardizedFileURL
@@ -270,6 +283,28 @@ do {
     var state = try! JSONDecoder().decode(PanelState.self, from: legacy)
     check(!state.minimized && !state.visible, "legacy panel state preserves visibility and defaults to expanded")
     check(state.screen == 7 && state.left == 42 && state.top == 18, "legacy panel placement survives migration")
+    check(!state.autoHide, "legacy panel defaults to manual mode")
+    for minimized in [false, true] {
+        state.minimized = minimized
+        check(state.showsCompact(hovered: false) == minimized && state.showsCompact(hovered: true) == minimized,
+              "manual mode ignores hover")
+        state.autoHide = true
+        check(state.showsCompact(hovered: false) && !state.showsCompact(hovered: true),
+              "auto-hide overrides manual mode only while enabled")
+        let saved = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
+        check(saved.autoHide && saved.minimized == minimized, "auto-hide and manual preference round-trip independently")
+        state.autoHide = false
+    }
+    var hover = AutoHideHover()
+    check(!hover.update(inside: false, now: 0) && !hover.expanded, "auto-hide starts collapsed")
+    check(hover.update(inside: true, now: 1) && hover.expanded, "entering expands")
+    check(!hover.update(inside: false, now: 2) && hover.expanded, "exit starts grace period")
+    check(!hover.update(inside: false, now: 2.39) && hover.expanded, "panel stays open during grace")
+    check(!hover.update(inside: true, now: 2.4) && hover.expanded, "re-entry cancels collapse")
+    check(!hover.update(inside: false, now: 3), "second exit starts a new grace period")
+    check(hover.update(inside: false, now: 3.41) && !hover.expanded, "exit collapses after 0.4 seconds")
+    check(!hover.update(inside: false, now: 10), "remaining outside does not rebuild")
+    check(hover.update(inside: true, now: 11), "collapsed panel can expand again")
     state.minimized = true
     let restored = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
     check(restored.minimized && !restored.visible && restored.left == 42, "compact preference round-trips with existing state")
@@ -431,6 +466,24 @@ do {
     let anchored = PanelGeometry.clamp(CGRect(x: 20, y: 10, width: 340, height: 500), to: small)
     check(anchored.maxY == 510, "height clamp preserves panel top when possible")
     let desktop = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    for screen in [desktop, small, CGRect(x: 0, y: 0, width: 100, height: 200), CGRect(x: -1600, y: -200, width: 1600, height: 900)] {
+        for point in [screen.origin, CGPoint(x: screen.maxX - 112, y: screen.maxY - 100)] {
+            let dog = PanelGeometry.autoHideFrame(CGRect(origin: point, size: CGSize(width: 112, height: 100)),
+                                                  expandedWidth: 420, in: screen)
+            let full = PanelGeometry.autoHideFrame(CGRect(x: dog.maxX - 420, y: dog.minY,
+                                                          width: 420, height: screen.height * 0.4),
+                                                   expandedWidth: 420, in: screen)
+            check(screen.contains(dog) && screen.contains(full), "both hover modes remain on screen")
+            check(dog.maxX == full.maxX && dog.minY == full.minY, "hover keeps mascot bottom-right anchored at edges")
+            let resting = PanelGeometry.bottomRightFrame(size: dog.size, of: full)
+            let restoredOrigin = CGPoint(x: screen.minX + (resting.minX - screen.minX),
+                                         y: screen.maxY - (screen.maxY - resting.maxY) - dog.height)
+            let restored = PanelGeometry.autoHideFrame(CGRect(origin: restoredOrigin, size: dog.size),
+                                                       expandedWidth: 420, in: screen)
+            check(restored == dog, "saving expanded and restoring collapsed keeps the dog at the same position")
+            check(PanelGeometry.autoHideFrame(dog, expandedWidth: 420, in: screen) == dog, "auto-hide geometry is stable")
+        }
+    }
     let compact = CGRect(x: 1700, y: 1000, width: 160, height: 40)
     check(PanelGeometry.clamp(compact, to: desktop) == compact,
           "restoring compact dimensions preserves saved placement near the right edge")

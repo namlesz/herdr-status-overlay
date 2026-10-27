@@ -70,5 +70,12 @@ public enum MascotAnimation {
         }
     }
 
+    /// Three staggered letters drift through a three-second loop; Reduce Motion freezes the trail.
+    public static func sleepPhases(tick: Int, reduceMotion: Bool) -> [Double] {
+        (0..<3).map { index in
+            reduceMotion ? Double(index + 1) / 4 : Double(positive(tick + index * 8, 24)) / 24
+        }
+    }
+
     private static func positive(_ tick: Int, _ period: Int) -> Int { (tick % period + period) % period }
 }

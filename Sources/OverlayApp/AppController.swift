@@ -11,6 +11,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let delivery = LatestSections()
     private var statusItem: NSStatusItem?
     private var toggleItem: NSMenuItem?
+    private var autoHideItem: NSMenuItem?
     private var timer: Timer?
     private var stopping = false
     private let focusQueue = DispatchQueue(label: "overlay.focus")
@@ -103,6 +104,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         let toggle = NSMenuItem(title: "", action: #selector(toggle), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
+        let autoHide = NSMenuItem(title: "Auto-hide", action: #selector(toggleAutoHide), keyEquivalent: "")
+        autoHide.target = self
+        autoHide.state = panel.isAutoHideEnabled ? .on : .off
+        menu.addItem(autoHide)
+        autoHideItem = autoHide
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit overlay", action: #selector(quit), keyEquivalent: "")
         quit.target = self
@@ -120,6 +126,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc private func toggle() {
         panel.setVisible(!panel.isVisibilityEnabled)
         updateToggleTitle()
+    }
+
+    @objc private func toggleAutoHide() {
+        panel.setAutoHide(!panel.isAutoHideEnabled)
+        autoHideItem?.state = panel.isAutoHideEnabled ? .on : .off
     }
 
     @objc private func quit() { shutdown() }
