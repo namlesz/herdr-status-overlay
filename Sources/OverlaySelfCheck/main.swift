@@ -18,7 +18,7 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String, line: Int = #li
 }
 
 do {
-    check(ThoughtBubble.opacity == 0.22, "thought cloud is ten percentage points more opaque")
+    check(ThoughtBubble.opacity == 0.22, "thought cloud uses the approved 22 percent opacity")
     for width in [CGFloat(112), 240, 420] {
         let bounds = CGRect(x: 0, y: 0, width: width, height: 58)
         let tailX = width - 48
@@ -123,8 +123,8 @@ do {
 do {
     var tracker = CompletionTracker()
     let key = AgentKey(paneID: "w1:p1", terminalID: "t-1")
-    func step(_ status: String, _ seq: UInt64?, terminal: String = "t-1") {
-        tracker.apply(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) }, terminal: terminal)]), now: 0)
+    func step(_ status: String, _ seq: UInt64?) {
+        tracker.apply(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) })]), now: 0)
     }
     func displayed(_ status: String, _ seq: UInt64?) -> DisplayStatus {
         tracker.display(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) })])[0], now: 0)
@@ -343,6 +343,9 @@ do {
         let saved = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
         check(saved.autoHide && saved.minimized == minimized, "auto-hide and manual preference round-trip independently")
         state.autoHide = false
+        let manual = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
+        check(manual.minimized == minimized && !manual.autoHide && !manual.visible && manual.left == 42,
+              "manual preference round-trips without losing visibility or placement")
     }
     var hover = AutoHideHover()
     check(!hover.update(inside: false, now: 0) && !hover.expanded, "auto-hide starts collapsed")
@@ -354,12 +357,6 @@ do {
     check(hover.update(inside: false, now: 3.41) && !hover.expanded, "exit collapses after 0.4 seconds")
     check(!hover.update(inside: false, now: 10), "remaining outside does not rebuild")
     check(hover.update(inside: true, now: 11), "collapsed panel can expand again")
-    state.minimized = true
-    let restored = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
-    check(restored.minimized && !restored.visible && restored.left == 42, "compact preference round-trips with existing state")
-    state.minimized = false
-    check(!(try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))).minimized,
-          "expanded preference round-trips")
 
     var store = Store(sources: [.local(executable: "/fake"), .machine("box", executable: "/fake")])
     check(SectionView.activeCounts(in: []) == nil, "empty compact snapshot has no data")
@@ -499,10 +496,10 @@ do {
     a["cwd"] = "/repo/zeta"
     z["cwd"] = "/repo/alpha"
     store.succeed("local", generation: store.begin("local"),
-                  agents: parse([agent("idle", "idle"), a, z, agent("blocked", "blocked"), agent("done", "done")]),
+                  agents: parse([agent("idle", "idle"), agent("unknown", "unknown"), a, z, agent("blocked", "blocked"), agent("done", "done")]),
                   now: seconds(1208))
-    check(store.view(now: seconds(1208))[0].rows.map(\.key.paneID) == ["blocked", "z", "a", "done", "idle"],
-          "rows sort blocked, working, done, idle, then place")
+    check(store.view(now: seconds(1208))[0].rows.map(\.key.paneID) == ["blocked", "z", "a", "done", "unknown", "idle"],
+          "rows sort blocked, working, done, unknown, idle, then place")
 }
 
 // MARK: Panel geometry (no AppKit or GUI)
@@ -586,7 +583,12 @@ do {
     let parsed = MachineList.parse("# comment\n\nbox\n  box  \n-oProxyCommand=x\nwith space\nok.host_1\n")
     check(parsed.aliases == ["box", "ok.host_1"], "aliases parsed and deduplicated")
     check(parsed.rejectedLines == [5, 6], "unsafe aliases rejected")
+    let crlf = MachineList.parse("# comment\r\n\r\nbox\r\n  box  \r\n-oProxyCommand=x\r\nwith space\r\nok.host_1\r\n")
+    check(crlf == parsed, "CRLF preserves aliases and rejected line numbers")
     check(MachineList.parse("").aliases.isEmpty, "empty list allowed")
+    let limited = MachineList.parse((0..<17).map { "m\($0)" }.joined(separator: "\n"))
+    check(limited.aliases == (0..<16).map { "m\($0)" } && limited.rejectedLines == [17],
+          "machine list keeps the first 16 aliases and reports overflow")
     let missing = try? MachineList.load(directory: URL(fileURLWithPath: "/nonexistent-\(getpid())"))
     check(missing == MachineList.Parsed(), "missing file means local only")
     let source = SourceConfig.machine("box", executable: "/x/herdr")
@@ -677,6 +679,37 @@ do {
     check(finished.wait(timeout: .now() + 3) == .success && cancelled == .cancelled, "cancel stops child")
     check(Date().timeIntervalSince(cancelStart) < 3 && groupGone(runner.lastGroup), "cancel cleans group")
     check(runner.run(["/bin/sh", "-c", "printf x"]) == .cancelled, "cancelled runner starts nothing")
+}
+
+// MARK: Model result mapping and UI notifications
+
+do {
+    let failures: [(RunOutcome, ReadFailure)] = [
+        (.exited(2, stdout: Data(), stderrBytes: 0), .exit(2)),
+        (.exited(0, stdout: Data("garbage".utf8), stderrBytes: 0), .malformed),
+        (.exited(0, stdout: Data(count: AgentListParser.maxBytes + 1), stderrBytes: 0), .oversized),
+        (.spawnFailed(ENOENT), .spawn(ENOENT)),
+        (.signaled(SIGTERM), .signal(SIGTERM)),
+        (.timedOut, .timeout), (.cancelled, .timeout), (.oversized, .oversized),
+    ]
+    for (outcome, expected) in failures {
+        let model = OverlayModel(sources: [.local(executable: "/fake")], clock: { 0 })
+        check(!model.finish("local", generation: model.begin("local"), outcome: outcome),
+              "failed read triggers backoff: \(expected)")
+        check(model.snapshot()[0].problem == .failed(expected), "read failure reaches the UI: \(expected)")
+    }
+
+    let model = OverlayModel(sources: [.local(executable: "/fake")], clock: { 0 })
+    var notifications = 0
+    model.onChange = { _ in notifications += 1 }
+    let success = RunOutcome.exited(0, stdout: json([agent("p1", "idle")]), stderrBytes: 0)
+    check(model.finish("local", generation: model.begin("local"), outcome: success), "valid read succeeds")
+    check(model.finish("local", generation: model.begin("local"), outcome: success), "unchanged read still succeeds")
+    model.tick()
+    let snapshot = model.snapshot() // Synchronizes with the queued tick before reading the callback count.
+    check(snapshot[0].problem == nil && notifications == 1, "unchanged heartbeat and tick do not notify the UI")
+    model.finish("local", generation: model.begin("local"), outcome: .timedOut)
+    check(notifications == 2, "a changed view notifies the UI again")
 }
 
 // MARK: Poller

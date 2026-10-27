@@ -62,7 +62,7 @@ public enum MachineList {
 
     public static func parse(_ text: String) -> Parsed {
         var parsed = Parsed()
-        for (index, raw) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        for (index, raw) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
             guard isAlias(line), parsed.aliases.count < maxAliases else {
