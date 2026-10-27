@@ -5,6 +5,10 @@ min_herdr_version = "0.9.5"
 description = "Native macOS panel with agent statuses read from the Herdr API."
 platforms = ["macos"]
 
+# Reuse the one-shot pane opener after the server restores its session.
+[[startup]]
+command = ["bin/open-overlay"]
+
 # The action only opens the helper pane in the background and returns.
 [[actions]]
 id = "open"

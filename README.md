@@ -13,9 +13,9 @@ herdr plugin link /ścieżka/do/herdr-status-overlay
 
 Maszyny remote (opcjonalnie): skopiuj `examples/machines.txt` do `$(herdr plugin config-dir local.status-overlay)/machines.txt` i wpisz aliasy zapisanych maszyn (`herdr machine list`), po jednym w wierszu, `#` to komentarz, maksymalnie 16. Brak pliku oznacza tylko sesję lokalną. Sesje otwarte wyłącznie przez `herdr --remote` nie są widoczne. Plik jest czytany przy starcie helpera.
 
-Start: akcja „Status overlay: start” z palety Herdr albo `herdr plugin action invoke open --plugin local.status-overlay`. Akcja otwiera w tle (bez zmiany fokusu) zakładkę pluginu, w której helper działa jako proces pierwszoplanowy. Druga instancja wypisze „już działa” i się zakończy.
+Start: automatycznie po uruchomieniu serwera Herdr i odtworzeniu sesji (także po aktualizacji z przekazaniem sesji nowemu serwerowi). Hook `[[startup]]` otwiera w tle (bez zmiany fokusu) zakładkę pluginu, w której helper działa jako proces pierwszoplanowy. Samo podłączenie klienta, przeładowanie konfiguracji, podlinkowanie lub włączenie pluginu nie uruchamia hooka. W już działającej sesji użyj akcji „Status overlay: start” z palety Herdr albo `herdr plugin action invoke open --plugin local.status-overlay`. Druga instancja wypisze „już działa” i się zakończy.
 
-Stop: zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku menu albo SIGTERM. Kończy to helper i jego odczyty; agenci działają dalej. Nie ma autostartu ani auto-restartu: po restarcie lub aktualizacji serwera Herdr uruchom akcję ponownie.
+Stop: zatrzymanie serwera Herdr, zamknięcie zakładki pluginu, „Quit overlay” w menu `HSO` na pasku menu albo SIGTERM. Helper obsługuje SIGHUP przy zamknięciu jego terminala i kończy swoje odczyty; ręczne zatrzymanie overlayu nie zatrzymuje agentów. Samo odłączenie klienta Herdr nie kończy overlayu. Nie ma nadzoru ani automatycznego ponawiania po awarii helpera lub ręcznym zamknięciu — do następnego startu serwera uruchom go ponownie akcją pluginu.
 
 ## Działanie
 
