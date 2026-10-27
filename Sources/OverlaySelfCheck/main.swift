@@ -232,7 +232,7 @@ do {
     check(MascotMood.select(in: moodStore.view(now: seconds(8)), now: seconds(8)) == .unavailable,
           "stale-only sources select unavailable mascot")
 
-    // Working: 4 s of 8 fps running, then 2 s of sniffing at half speed, then running again.
+    // Work preserves running/sniffing, then rotates through all five requested games.
     let tick = MascotAnimation.tickInterval
     check(MascotAnimation.frame(for: .working, tick: 0, reduceMotion: false) == .run0, "work starts running")
     check((0..<4).map { MascotAnimation.frame(for: .working, tick: $0, reduceMotion: false) }
@@ -242,17 +242,39 @@ do {
           "running lasts four seconds")
     check((0..<8).map { MascotAnimation.frame(for: .working, tick: sniffStart + $0, reduceMotion: false) }
           == [.sniff0, .sniff0, .sniff1, .sniff1, .sniff2, .sniff2, .sniff3, .sniff3], "sniff cycle at half speed")
-    check(MascotAnimation.frame(for: .working, tick: Int(6 / tick), reduceMotion: false) == .run0,
-          "running resumes after two seconds of sniffing")
-    for t in [-5, 0, 7, 40, 1_000_003] {
-        check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: true) == .run3,
-              "Reduce Motion keeps working on one still frame")
-        check(MascotFrame.allCases.contains(MascotAnimation.frame(for: .working, tick: t, reduceMotion: false)),
-              "any tick selects a bundled frame")
+    let games: [[MascotFrame]] = [
+        [.splash0, .splash1, .splash2, .splash3], [.dig0, .dig1, .dig2, .dig3],
+        [.tug0, .tug1, .tug2, .tug3], [.roll0, .roll1, .roll2, .roll3],
+        [.fetch0, .fetch1, .fetch2, .fetch3],
+    ]
+    for (index, frames) in games.enumerated() {
+        let start = Int((6 + Double(index) * 4) / tick)
+        let expected = (0..<32).map { frames[$0 / 2 % 4] }
+        check((0..<32).map { MascotAnimation.frame(for: .working, tick: start + $0, reduceMotion: false) } == expected,
+              "\(frames[0]) plays four distinct frames at 4 fps for four seconds")
     }
-    for mood in [MascotMood.sleeping, .blocked, .unavailable, .celebrating] {
+    let workPeriod = Int(26 / tick)
+    check(MascotAnimation.frame(for: .working, tick: workPeriod, reduceMotion: false) == .run0,
+          "running resumes after every game")
+    check(MascotAnimation.frame(for: .working, tick: workPeriod - 1, reduceMotion: false) == .fetch3,
+          "last game finishes before wrapping")
+    for t in [Int.min, -209, -5, 0, 7, 40, 1_000_003, Int.max] {
+        check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: true) == .standing,
+              "Reduce Motion keeps working on a still standing frame")
+        check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: false)
+              == MascotAnimation.frame(for: .working, tick: (t % workPeriod + workPeriod) % workPeriod, reduceMotion: false),
+              "work wraps safely for any tick")
+        check(MascotAnimation.frame(for: .blocked, tick: t, reduceMotion: true) == .blocked,
+              "Reduce Motion freezes the STOP pose")
+    }
+    let stopFrames: [MascotFrame] = [.blocked, .blocked1, .blocked2, .blocked3]
+    check((0..<32).map { MascotAnimation.frame(for: .blocked, tick: $0, reduceMotion: false) }
+          == (0..<32).map { stopFrames[$0 % 16 / 4] }, "STOP animation loops at 2 fps without work frames")
+    for mood in [MascotMood.sleeping, .unavailable, .celebrating] {
         check(Set((0..<48).map { MascotAnimation.frame(for: mood, tick: $0, reduceMotion: false) }).count == 1,
               "\(mood) keeps its single state frame")
+    }
+    for mood in [MascotMood.sleeping, .working, .blocked, .unavailable, .celebrating] {
         check((0..<48).allSatisfy { MascotAnimation.lift(for: mood, tick: $0, reduceMotion: true) == 0 },
               "Reduce Motion stops \(mood) bobbing")
         check((0..<48).allSatisfy { (0...5).contains(MascotAnimation.lift(for: mood, tick: $0, reduceMotion: false)) },
@@ -286,6 +308,8 @@ do {
                                 bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        check(pixels.enumerated().contains { $0.offset % 4 == 3 && $0.element > 128 },
+              "\(frame.resourceName).png contains visible artwork")
         let edge = (0..<image.width).flatMap { [($0, 0), ($0, image.height - 1), (0, $0), (image.width - 1, $0)] }
         check(image.width == image.height && image.alphaInfo != .none, "\(frame.resourceName).png is square with alpha")
         check(edge.allSatisfy { pixels[($0.1 * image.width + $0.0) * 4 + 3] == 0 },

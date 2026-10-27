@@ -8,7 +8,7 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// Illustrated corgi frames, decoded once from the bundled PNGs.
+/// Illustrated dog frames, decoded once from the bundled PNGs.
 private enum CorgiArt {
     static let frames: [MascotFrame: NSImage] = {
         var frames: [MascotFrame: NSImage] = [:]
@@ -18,7 +18,7 @@ private enum CorgiArt {
                                               subdirectory: "Corgi"),
                   let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, options) else {
-                NSLog("Herdr Status Overlay: missing corgi frame %@", frame.resourceName)
+                NSLog("Herdr Status Overlay: missing dog frame %@", frame.resourceName)
                 continue
             }
             frames[frame] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
@@ -301,7 +301,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     // MARK: Panel setup
 
     private func configurePanel() {
-        corgi.setAccessibilityLabel("Corgi status mascot")
+        corgi.setAccessibilityLabel("Dog status mascot")
         corgi.translatesAutoresizingMaskIntoConstraints = false
         corgi.widthAnchor.constraint(equalToConstant: CorgiView.side).isActive = true
         corgi.heightAnchor.constraint(equalToConstant: CorgiView.side).isActive = true
@@ -416,7 +416,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if mood != self.mood {
             self.mood = mood
             tick = 0
-            corgi.setAccessibilityLabel("Corgi: \(mood)")
+            corgi.setAccessibilityLabel("Dog: \(mood)")
         } else if advance && !reduceMotion {
             tick += 1
         }

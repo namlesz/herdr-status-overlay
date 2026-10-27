@@ -1,6 +1,6 @@
-// Cuts the green-screen corgi sheets in Art/corgi into transparent mascot frames.
+// Cuts the green-screen dog sheets in Art/dog into transparent mascot frames.
 // Usage, from the repository root: swift scripts/prepare-corgi-assets.swift
-// Writes Sources/OverlayApp/Resources/Corgi/*.png and a review sheet at .build/corgi-contact-sheet.png.
+// Retains the legacy Resources/Corgi directory and script name; the art is now the approved dog.
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -10,20 +10,23 @@ let cell = 512
 let canvas = 256
 let padding = 8
 let output = URL(fileURLWithPath: "Sources/OverlayApp/Resources/Corgi")
-let sheets = URL(fileURLWithPath: "Art/corgi")
+let sheets = URL(fileURLWithPath: "Art/dog")
 
-/// Each group shares one crop box so the motion between its frames survives the cut.
-/// Cells are (column, row) of a 2×2 sheet. The sheet's two left-paw strides are near duplicates,
-/// so the second one is mirrored to make the paws alternate.
-let groups: [(sheet: String, frames: [(name: String, column: Int, row: Int, mirrored: Bool)])] = [
-    ("run-sheet", [("run-0", 0, 0, false), ("run-1", 1, 0, false), ("run-2", 0, 1, true), ("run-3", 1, 1, false)]),
-    ("sniff-sheet", [("sniff-0", 0, 0, false), ("sniff-1", 1, 0, false), ("sniff-2", 0, 1, false),
-                     ("sniff-3", 1, 1, false)]),
-    ("states-sheet", [("sleeping", 0, 0, false)]),
-    ("states-sheet", [("blocked", 1, 0, false)]),
-    ("states-sheet", [("celebrating", 0, 1, false)]),
-    ("states-sheet", [("unavailable", 1, 1, false)]),
-]
+/// Each sequence shares a crop box so motion between its 2×2 cells survives the cut.
+var groups: [(sheet: String, frames: [(name: String, column: Int, row: Int)])] = []
+for activity in ["run", "sniff", "splash", "dig", "tug", "roll", "fetch", "blocked"] {
+    let frames: [(name: String, column: Int, row: Int)] = (0..<4).map { index in
+        let name = activity == "blocked" && index == 0 ? "blocked" : "\(activity)-\(index)"
+        return (name, index % 2, index / 2)
+    }
+    groups.append((activity + "-sheet", frames))
+}
+groups += [
+        ("states-sheet", [("sleeping", 0, 0)]),
+        ("states-sheet", [("unavailable", 1, 0)]),
+        ("states-sheet", [("celebrating", 0, 1)]),
+        ("states-sheet", [("standing", 1, 1)]),
+    ]
 
 struct Box {
     var minX = Int.max, minY = Int.max, maxX = Int.min, maxY = Int.min
@@ -125,7 +128,6 @@ for (index, group) in groups.enumerated() {
     let originY = Double(padding) - Double(cell - 1 - union.maxY) * scale
     for (frame, keyedCell) in zip(group.frames, keyed[index]) {
         let target = context(width: canvas, height: canvas)
-        if frame.mirrored { target.translateBy(x: CGFloat(canvas), y: 0); target.scaleBy(x: -1, y: 1) }
         target.draw(image(keyedCell.pixels, width: cell, height: cell),
                     in: CGRect(x: originX, y: originY, width: drawnWidth, height: drawnWidth))
         let result = target.makeImage()!
