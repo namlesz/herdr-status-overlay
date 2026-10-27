@@ -300,6 +300,14 @@ do {
     var state = try! JSONDecoder().decode(PanelState.self, from: legacy)
     check(!state.minimized && !state.visible, "legacy panel state preserves visibility and defaults to expanded")
     check(state.screen == 7 && state.left == 42 && state.top == 18, "legacy panel placement survives migration")
+    check(state.direction == .topLeft && !state.mascotAnchored, "legacy panel direction and placement format default safely")
+    state.mascotAnchored = true
+    for direction in PanelDirection.allCases {
+        state.direction = direction
+        let saved = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
+        check(saved.direction == direction && saved.left == 42 && saved.mascotAnchored,
+              "direction and canonical placement round-trip without losing position")
+    }
     check(!state.autoHide, "legacy panel defaults to manual mode")
     for minimized in [false, true] {
         state.minimized = minimized
@@ -507,6 +515,23 @@ do {
                 let savedDog = PanelGeometry.bottomRightFrame(size: dog.size, of: bubble)
                 let restoredBubble = PanelGeometry.bottomRightFrame(size: bubble.size, of: savedDog)
                 check(restoredBubble == bubble, "canonical dog footprint restores the taller, wider bubble without shifting")
+            }
+        }
+    }
+    for direction in PanelDirection.allCases {
+        for screen in [desktop, small, CGRect(x: -1600, y: -200, width: 1600, height: 900)] {
+            for origin in [screen.origin, CGPoint(x: screen.maxX - 112, y: screen.maxY - 100)] {
+                let dog = PanelGeometry.autoHideFrame(CGRect(origin: origin, size: CGSize(width: 112, height: 100)),
+                                                     expandedWidth: 420, direction: direction, in: screen)
+                for size in [CGSize(width: 112, height: 155), CGSize(width: 240, height: 155),
+                             CGSize(width: 420, height: screen.height * 0.4)] {
+                    let frame = PanelGeometry.autoHideFrame(
+                        PanelGeometry.anchoredFrame(size: size, of: dog, direction: direction),
+                        expandedWidth: 420, direction: direction, in: screen)
+                    check(screen.contains(frame), "all directions fit at screen edges")
+                    check(PanelGeometry.anchoredFrame(size: dog.size, of: frame, direction: direction) == dog,
+                          "all directions keep canonical mascot position through resizing and restore")
+                }
             }
         }
     }

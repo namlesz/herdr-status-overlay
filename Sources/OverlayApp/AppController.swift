@@ -109,6 +109,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         autoHide.state = panel.isAutoHideEnabled ? .on : .off
         menu.addItem(autoHide)
         autoHideItem = autoHide
+        let position = NSMenuItem(title: "Panel position", action: nil, keyEquivalent: "")
+        let positions = NSMenu()
+        for direction in PanelDirection.allCases {
+            let choice = NSMenuItem(title: direction.title, action: #selector(selectDirection(_:)), keyEquivalent: "")
+            choice.target = self
+            choice.representedObject = direction.rawValue
+            choice.state = direction == panel.direction ? .on : .off
+            positions.addItem(choice)
+        }
+        position.submenu = positions
+        menu.addItem(position)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit overlay", action: #selector(quit), keyEquivalent: "")
         quit.target = self
@@ -131,6 +142,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc private func toggleAutoHide() {
         panel.setAutoHide(!panel.isAutoHideEnabled)
         autoHideItem?.state = panel.isAutoHideEnabled ? .on : .off
+    }
+
+    @objc private func selectDirection(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let direction = PanelDirection(rawValue: raw) else { return }
+        panel.setDirection(direction)
+        for item in sender.menu?.items ?? [] {
+            item.state = (item.representedObject as? String) == direction.rawValue ? .on : .off
+        }
     }
 
     @objc private func quit() { shutdown() }

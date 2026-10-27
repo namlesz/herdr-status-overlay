@@ -63,9 +63,11 @@ private final class CorgiView: NSView {
 
 private final class ThoughtBubbleView: NSView {
     private let reduceTransparency: Bool
+    private let direction: PanelDirection
 
-    init(reduceTransparency: Bool) {
+    init(reduceTransparency: Bool, direction: PanelDirection) {
         self.reduceTransparency = reduceTransparency
+        self.direction = direction
         super.init(frame: .zero)
     }
 
@@ -75,7 +77,12 @@ private final class ThoughtBubbleView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         context.setFillColor(NSColor.white.withAlphaComponent(reduceTransparency ? 1 : ThoughtBubble.opacity).cgColor)
-        context.addPath(ThoughtBubble.path(in: bounds, tailX: bounds.maxX - CorgiView.side / 2))
+        let transform = CGAffineTransform(a: direction.extendsLeft ? 1 : -1, b: 0, c: 0,
+                                         d: direction.extendsUp ? 1 : -1,
+                                         tx: direction.extendsLeft ? 0 : bounds.width,
+                                         ty: direction.extendsUp ? 0 : bounds.height)
+        context.concatenate(transform)
+        context.addPath(ThoughtBubble.path(in: bounds, tailX: bounds.maxX - CorgiView.side / 2 - 8))
         context.fillPath()
     }
 }
@@ -83,9 +90,11 @@ private final class ThoughtBubbleView: NSView {
 private final class CardBackdropView: NSVisualEffectView {
     static let tailHeight: CGFloat = 9
     private let speechTail: Bool
+    private let direction: PanelDirection
 
-    init(speechTail: Bool, reduceTransparency: Bool) {
+    init(speechTail: Bool, reduceTransparency: Bool, direction: PanelDirection) {
         self.speechTail = speechTail
+        self.direction = direction
         super.init(frame: .zero)
         material = .hudWindow
         blendingMode = .behindWindow
@@ -128,7 +137,9 @@ private final class CardBackdropView: NSVisualEffectView {
         } else {
             path.addRoundedRect(in: bounds, cornerWidth: radius, cornerHeight: radius)
         }
-        mask.path = path
+        var transform = CGAffineTransform(a: 1, b: 0, c: 0, d: direction.extendsUp ? 1 : -1,
+                                          tx: 0, ty: direction.extendsUp ? 0 : bounds.height)
+        mask.path = path.copy(using: &transform)
         layer.mask = mask
     }
 }
@@ -171,6 +182,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var tick = 0
     private var mascotCornerConstraints: [NSLayoutConstraint] = []
     private var scrollBottom: NSLayoutConstraint!
+    private var scrollTop: NSLayoutConstraint!
 
     private var adjustingFrame = false
     private var contentWidth: CGFloat = PanelController.width
@@ -196,6 +208,20 @@ final class PanelController: NSObject, NSWindowDelegate {
     var isVisibilityEnabled: Bool { state.visible }
 
     var isAutoHideEnabled: Bool { state.autoHide }
+    var direction: PanelDirection { state.direction }
+
+    func setDirection(_ direction: PanelDirection) {
+        guard direction != state.direction, let screen = currentScreen else { return }
+        let dog = PanelGeometry.anchoredFrame(size: restingSize(in: screen.visibleFrame),
+                                             of: panel.frame, direction: state.direction)
+        state.direction = direction
+        adjustingFrame = true
+        panel.setFrame(PanelGeometry.anchoredFrame(size: panel.frame.size, of: dog, direction: direction), display: false)
+        adjustingFrame = false
+        rebuildContent()
+        recordPosition()
+        saveState()
+    }
 
     func setAutoHide(_ enabled: Bool) {
         state.autoHide = enabled
@@ -246,6 +272,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         scroll.hasVerticalScroller = !(state.autoHide && compact)
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         contentWidth = Self.width
+        stack.alignment = .leading
         if compact {
             addCompactSummary(sections)
         } else {
@@ -300,6 +327,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(scroll)
         scrollBottom = scroll.bottomAnchor.constraint(equalTo: background.bottomAnchor)
+        scrollTop = scroll.topAnchor.constraint(equalTo: background.topAnchor)
 
         let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false
@@ -313,7 +341,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: background.topAnchor),
+            scrollTop,
             scrollBottom,
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
@@ -337,8 +365,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         card.spacing = 4
         let padding: CGFloat = transparentBubble ? 20 : 12
         let tail = transparentBubble ? ThoughtBubble.tailHeight : (speechTail ? CardBackdropView.tailHeight : 0)
-        card.edgeInsets = NSEdgeInsets(top: transparentBubble ? 12 : 10, left: padding,
-                                       bottom: (transparentBubble ? 12 : 10) + tail, right: padding)
+        let verticalPadding: CGFloat = transparentBubble ? 12 : 10
+        card.edgeInsets = NSEdgeInsets(top: verticalPadding + (state.direction.extendsUp ? 0 : tail), left: padding,
+                                       bottom: verticalPadding + (state.direction.extendsUp ? tail : 0), right: padding)
         let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         card.wantsLayer = true
         card.layer?.backgroundColor = NSColor.clear.cgColor
@@ -347,8 +376,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         card.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(card)
         let backdrop: NSView = transparentBubble
-            ? ThoughtBubbleView(reduceTransparency: reduceTransparency)
-            : CardBackdropView(speechTail: speechTail, reduceTransparency: reduceTransparency)
+            ? ThoughtBubbleView(reduceTransparency: reduceTransparency, direction: state.direction)
+            : CardBackdropView(speechTail: speechTail, reduceTransparency: reduceTransparency, direction: state.direction)
         backdrop.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(backdrop, positioned: .below, relativeTo: nil)
         NSLayoutConstraint.activate([
@@ -361,16 +390,21 @@ final class PanelController: NSObject, NSWindowDelegate {
         return card
     }
 
-    /// Pins the mascot to the panel's bottom-right corner, outside the scroll view, so it never scrolls away.
+    /// Keeps the mascot outside the scrolling cards, opposite the list's direction.
     private func addCorgiCorner() {
         guard let background = panel.contentView else { return }
         NSLayoutConstraint.deactivate(mascotCornerConstraints)
         corgi.removeFromSuperview()
         background.addSubview(corgi)
-        scrollBottom.constant = -Self.mascotFooter
+        scrollTop.constant = state.direction.extendsUp ? 0 : Self.mascotFooter
+        scrollBottom.constant = state.direction.extendsUp ? -Self.mascotFooter : 0
         mascotCornerConstraints = [
-            corgi.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -8),
-            corgi.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -2)
+            state.direction.extendsLeft
+                ? corgi.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -8)
+                : corgi.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 8),
+            state.direction.extendsUp
+                ? corgi.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -2)
+                : corgi.topAnchor.constraint(equalTo: background.topAnchor, constant: 2)
         ]
         NSLayoutConstraint.activate(mascotCornerConstraints)
     }
@@ -415,7 +449,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         let card = makeCard(fillWidth: false, speechTail: true)
         let counters = countView(SectionView.activeCounts(in: sections),
                                  order: [.working, .blocked, .done], emptyText: "No active agents")
-        let line = NSStackView(views: [toggleButton(), counters])
+        // Measure before attaching to the old panel width; stack fitting sizes can retain that width.
+        let counterWidth = counters.fittingSize.width
+        let button = toggleButton()
+        let line = NSStackView(views: state.autoHide ? [counters] : [button, counters])
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 10
@@ -423,23 +460,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         let unavailable = sections.filter(\.stale).map(\.label)
         card.toolTip = unavailable.isEmpty ? counters.toolTip
             : "Fresh sources only. Unavailable: " + unavailable.joined(separator: ", ")
-        if state.autoHide {
-            addCorgiCorner()
-            contentWidth = min(Self.width, max(CorgiView.side + 16, line.fittingSize.width + 40))
-            card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            return
-        }
-        stack.removeArrangedSubview(card)
-        NSLayoutConstraint.deactivate(mascotCornerConstraints)
-        scrollBottom.constant = 0
-        card.removeFromSuperview()
-        // Speech bubble above the dog, its tail pointing down at the dog's head.
-        let row = NSStackView(views: [card, corgi])
-        row.orientation = .vertical
-        row.alignment = .centerX
-        row.spacing = 0
-        stack.addArrangedSubview(row)
-        contentWidth = min(Self.width, (row.fittingSize.width + 16).rounded(.up))
+        addCorgiCorner()
+        let padding: CGFloat = state.autoHide ? 40 : 24
+        let controls = state.autoHide ? 0 : button.fittingSize.width + line.spacing
+        let bubbleWidth = min(Self.width, ceil(counterWidth + padding + controls))
+        card.widthAnchor.constraint(equalToConstant: bubbleWidth).isActive = true
+        contentWidth = max(CorgiView.side + 16, bubbleWidth)
+        stack.alignment = state.direction.extendsLeft ? .trailing : .leading
     }
 
     private func addSection(_ section: SectionView) {
@@ -602,16 +629,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         defer { adjustingFrame = false }
         stack.layoutSubtreeIfNeeded()
         guard let screen = destination ?? currentScreen else { return }
-        let footer = compact && !state.autoHide ? 0 : Self.mascotFooter
+        let footer = Self.mascotFooter
         let height = min(stack.fittingSize.height + footer, screen.visibleFrame.height * 0.4).rounded(.up)
-        var frame = panel.frame
-        if state.autoHide {
-            // Both modes pin the dog at bottom-right; expand upwards and leftwards.
-            frame = PanelGeometry.bottomRightFrame(size: NSSize(width: contentWidth, height: max(height, 40)), of: frame)
-        } else {
-            frame.origin.y = frame.maxY - max(height, 40)
-        }
-        frame.size = NSSize(width: contentWidth, height: max(height, 40))
+        let frame = PanelGeometry.anchoredFrame(size: NSSize(width: contentWidth, height: max(height, 40)),
+                                                of: panel.frame, direction: state.direction)
         panel.setFrame(clamped(frame, to: screen), display: true)
     }
 
@@ -626,10 +647,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         let visible = screen.visibleFrame
         var frame = panel.frame
         if saved != nil, let left = state.left, let top = state.top {
-            let size = state.autoHide ? restingSize(in: visible) : frame.size
+            let size = state.autoHide || state.mascotAnchored ? restingSize(in: visible) : frame.size
             let savedFrame = NSRect(x: visible.minX + left, y: visible.maxY - top - size.height,
                                     width: size.width, height: size.height)
-            frame = PanelGeometry.bottomRightFrame(size: frame.size, of: savedFrame)
+            frame = PanelGeometry.anchoredFrame(size: frame.size, of: savedFrame, direction: state.direction)
         } else {
             frame.origin = NSPoint(x: visible.maxX - frame.width - Self.margin,
                                    y: visible.maxY - frame.height - Self.margin)
@@ -640,7 +661,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func clamped(_ frame: NSRect, to screen: NSScreen) -> NSRect {
         state.autoHide
-            ? PanelGeometry.autoHideFrame(frame, expandedWidth: Self.width, in: screen.visibleFrame)
+            ? PanelGeometry.autoHideFrame(frame, expandedWidth: Self.width,
+                                          direction: state.direction, in: screen.visibleFrame)
             : PanelGeometry.clamp(frame, to: screen.visibleFrame)
     }
 
@@ -652,10 +674,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard let screen = currentScreen else { return }
         let visible = screen.visibleFrame
         state.screen = number(of: screen)
-        // Startup is always collapsed: persist that footprint even while the list is open.
-        let frame = state.autoHide
-            ? PanelGeometry.bottomRightFrame(size: restingSize(in: visible), of: panel.frame)
-            : panel.frame
+        // Content can change before or after restart; persist only the fixed mascot footprint.
+        let frame = PanelGeometry.anchoredFrame(size: restingSize(in: visible),
+                                                of: panel.frame, direction: state.direction)
+        state.mascotAnchored = true
         state.left = Double(frame.minX - visible.minX)
         state.top = Double(visible.maxY - frame.maxY)
     }

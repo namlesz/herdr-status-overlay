@@ -3,8 +3,14 @@ import CoreGraphics
 
 /// Pure screen bounds calculation shared by the AppKit panel and headless checks.
 public enum PanelGeometry {
+    public static func anchoredFrame(size: CGSize, of frame: CGRect, direction: PanelDirection) -> CGRect {
+        CGRect(x: direction.extendsLeft ? frame.maxX - size.width : frame.minX,
+               y: direction.extendsUp ? frame.minY : frame.maxY - size.height,
+               width: size.width, height: size.height)
+    }
+
     public static func bottomRightFrame(size: CGSize, of frame: CGRect) -> CGRect {
-        CGRect(x: frame.maxX - size.width, y: frame.minY, width: size.width, height: size.height)
+        anchoredFrame(size: size, of: frame, direction: .topLeft)
     }
 
     public static func clamp(_ frame: CGRect, to visible: CGRect) -> CGRect {
@@ -16,11 +22,13 @@ public enum PanelGeometry {
     }
 
     /// Reserve the expanded footprint even when collapsed, so hover never moves the mascot.
-    public static func autoHideFrame(_ frame: CGRect, expandedWidth: CGFloat, in visible: CGRect) -> CGRect {
-        let footprint = clamp(CGRect(x: frame.maxX - expandedWidth, y: frame.minY,
-                                     width: expandedWidth, height: visible.height * 0.4), to: visible)
-        let width = min(frame.width, footprint.width)
-        return CGRect(x: footprint.maxX - width, y: footprint.minY,
-                      width: width, height: min(frame.height, footprint.height))
+    public static func autoHideFrame(_ frame: CGRect, expandedWidth: CGFloat,
+                                     direction: PanelDirection = .topLeft,
+                                     in visible: CGRect) -> CGRect {
+        let size = CGSize(width: min(expandedWidth, visible.width), height: visible.height * 0.4)
+        let footprint = clamp(anchoredFrame(size: size, of: frame, direction: direction), to: visible)
+        return anchoredFrame(size: CGSize(width: min(frame.width, footprint.width),
+                                          height: min(frame.height, footprint.height)),
+                             of: footprint, direction: direction)
     }
 }
