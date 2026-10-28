@@ -43,8 +43,13 @@ private final class CorgiView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let scale = bounds.width / Self.side
+        guard scale > 0 else { return }
+        context.saveGState()
+        context.scaleBy(x: scale, y: scale)
         // Inset so the highest hop (5 pt) still fits inside the view.
-        CorgiArt.frames[art]?.draw(in: NSRect(x: 3, y: 1 + lift, width: bounds.width - 6, height: bounds.width - 6))
+        CorgiArt.frames[art]?.draw(in: NSRect(x: 3, y: 1 + lift, width: Self.side - 6, height: Self.side - 6))
         for phase in sleepPhases {
             let p = CGFloat(phase)
             let text = p < 0.6 ? "z" : "Z"
@@ -57,6 +62,7 @@ private final class CorgiView: NSView {
                                                                               alpha: sin(p * .pi)),
                                                     .shadow: shadow])
         }
+        context.restoreGState()
     }
 }
 
@@ -165,8 +171,9 @@ private final class ClickableRow: NSStackView {
 final class PanelController: NSObject, NSWindowDelegate {
     private static let width: CGFloat = 420
     private static let margin: CGFloat = 16
-    /// Fixed band under the scrolling cards that holds the expanded-mode mascot.
-    private static let mascotFooter: CGFloat = CorgiView.side + 4
+    /// Band under the scrolling cards sized for the mascot scene.
+    private var mascotSide: CGFloat = CorgiView.side
+    private var mascotFooter: CGFloat { mascotSide + 4 }
 
     private let panel: NSPanel
     private let scroll = NSScrollView()
@@ -182,10 +189,13 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var mood: MascotMood?
     private var tick = 0
     private var workActivity = MascotActivity.allCases.randomElement()!
+    private var pairAnimation = MascotPairAnimation()
     private var flipStartedAt: TimeInterval?
     private var mascotCornerConstraints: [NSLayoutConstraint] = []
     private var scrollBottom: NSLayoutConstraint!
     private var scrollTop: NSLayoutConstraint!
+    private var corgiWidthConstraint: NSLayoutConstraint!
+    private var corgiHeightConstraint: NSLayoutConstraint!
 
     private var adjustingFrame = false
     private var contentWidth: CGFloat = PanelController.width
@@ -231,6 +241,19 @@ final class PanelController: NSObject, NSWindowDelegate {
         recordPosition()
         saveState()
     }
+    var dogScalePercent: Int { state.dogScalePercent }
+
+    func setDogScalePercent(_ percent: Int) {
+        guard PanelState.dogScalePercentRange.contains(percent), percent != state.dogScalePercent else { return }
+        state.dogScalePercent = percent
+        if let screen = currentScreen {
+            if updateMascotSize(for: screen.visibleFrame) { rebuildContent() }
+            resize(to: screen)
+            recordPosition()
+        }
+        saveState()
+    }
+
 
     func setAutoHide(_ enabled: Bool) {
         state.autoHide = enabled
@@ -311,8 +334,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func configurePanel() {
         corgi.setAccessibilityLabel("Dog status mascot")
         corgi.translatesAutoresizingMaskIntoConstraints = false
-        corgi.widthAnchor.constraint(equalToConstant: CorgiView.side).isActive = true
-        corgi.heightAnchor.constraint(equalToConstant: CorgiView.side).isActive = true
+        corgiWidthConstraint = corgi.widthAnchor.constraint(equalToConstant: mascotSide)
+        corgiHeightConstraint = corgi.heightAnchor.constraint(equalToConstant: mascotSide)
+        NSLayoutConstraint.activate([corgiWidthConstraint, corgiHeightConstraint])
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications]
         panel.hidesOnDeactivate = false
@@ -404,8 +428,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         NSLayoutConstraint.deactivate(mascotCornerConstraints)
         corgi.removeFromSuperview()
         background.addSubview(corgi)
-        scrollTop.constant = state.direction.extendsUp ? 0 : Self.mascotFooter
-        scrollBottom.constant = state.direction.extendsUp ? -Self.mascotFooter : 0
+        scrollTop.constant = state.direction.extendsUp ? 0 : mascotFooter
+        scrollBottom.constant = state.direction.extendsUp ? -mascotFooter : 0
         mascotCornerConstraints = [
             state.direction.extendsLeft
                 ? corgi.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -8)
@@ -437,6 +461,12 @@ final class PanelController: NSObject, NSWindowDelegate {
             if mood == .working { workActivity = MascotActivity.allCases.randomElement()! }
             corgi.setAccessibilityLabel("Dog: \(mood)")
         }
+        if mood == .blocked || mood == .unavailable {
+            pairAnimation.interrupt()
+        } else {
+            pairAnimation.setActive(MascotMood.workingCount(in: sections) >= 2,
+                                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        }
         showCorgiFrame()
         celebrationTimer?.invalidate()
         celebrationTimer = nil
@@ -450,12 +480,23 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         let animate = MascotAnimation.isAnimated(for: mood,
                           reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        if panel.isVisible && (state.autoHide || animate || flipStartedAt != nil) {
+        if panel.isVisible && (state.autoHide || animate || pairAnimation.needsTicks || flipStartedAt != nil) {
             guard animationTimer == nil else { return }
             animationTimer = Timer.scheduledTimer(withTimeInterval: MascotAnimation.tickInterval,
                                                   repeats: true) { [weak self] _ in
                 guard let self else { return }
                 let wasFlipping = self.flipStartedAt != nil
+                let wasPairTicking = self.pairAnimation.needsTicks
+                let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                let flipVisible: Bool
+                if let startedAt = self.flipStartedAt, self.panel.isVisible, let mood = self.mood {
+                    flipVisible = MascotAnimation.flipFrame(for: mood,
+                        elapsed: ProcessInfo.processInfo.systemUptime - startedAt, reduceMotion: reduceMotion) != nil
+                } else {
+                    flipVisible = false
+                }
+                let pairSceneVisible = self.mood == .pairWorking || self.pairAnimation.isExiting
+                self.pairAnimation.tick(visible: pairSceneVisible && !flipVisible)
                 if let mood = self.mood, MascotAnimation.isAnimated(for: mood,
                     reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
                     self.tick += 1
@@ -465,6 +506,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                     }
                 }
                 self.showCorgiFrame()
+                if wasPairTicking && !self.pairAnimation.needsTicks { self.updateCorgiMood() }
                 if wasFlipping && self.flipStartedAt == nil { self.updateCorgiMood() }
                 self.updateHover()
             }
@@ -484,6 +526,11 @@ final class PanelController: NSObject, NSWindowDelegate {
             return
         }
         flipStartedAt = nil
+        if let frame = pairAnimation.frame(reduceMotion: reduceMotion),
+           (mood == .pairWorking || pairAnimation.isExiting) {
+            corgi.show(frame, lift: 0, sleepPhases: [])
+            return
+        }
         corgi.show(MascotAnimation.frame(for: mood, tick: tick, reduceMotion: reduceMotion, activity: workActivity),
                    lift: CGFloat(MascotAnimation.lift(for: mood, tick: tick, reduceMotion: reduceMotion)),
                    sleepPhases: mood == .sleeping ? MascotAnimation.sleepPhases(tick: tick, reduceMotion: reduceMotion) : [])
@@ -513,7 +560,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let counts = SectionView.activeCounts(in: sections)
         if state.autoHide, counts?.isEmpty == true {
             addCorgiCorner()
-            contentWidth = CorgiView.side + 16
+            contentWidth = mascotSide + 16
             return
         }
         let card = makeCard(fillWidth: false, speechTail: true)
@@ -533,10 +580,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         addCorgiCorner()
         let padding: CGFloat = state.autoHide ? 40 : 24
         let controls = state.autoHide ? 0 : button.fittingSize.width + line.spacing
-        let sideInset: CGFloat = state.autoHide ? CorgiView.side / 2 : 0
-        let bubbleWidth = min(Self.width - sideInset, ceil(counterWidth + padding + controls))
+        let sideInset: CGFloat = state.autoHide ? mascotSide / 2 : 0
+        let bubbleWidth = min(Self.width, ceil(counterWidth + padding + controls))
         card.widthAnchor.constraint(equalToConstant: bubbleWidth).isActive = true
-        contentWidth = max(CorgiView.side + 16, bubbleWidth + sideInset)
+        contentWidth = max(mascotSide + 16, bubbleWidth + sideInset)
         let alignLeft = state.autoHide ? state.direction.extendsLeft : !state.direction.extendsLeft
         stack.alignment = alignLeft ? .leading : .trailing
     }
@@ -701,22 +748,34 @@ final class PanelController: NSObject, NSWindowDelegate {
         defer { adjustingFrame = false }
         stack.layoutSubtreeIfNeeded()
         guard let screen = destination ?? currentScreen else { return }
-        let footer = Self.mascotFooter
+        let footer = mascotFooter
         let height = min(stack.fittingSize.height + footer, screen.visibleFrame.height * 0.4).rounded(.up)
         let frame = PanelGeometry.anchoredFrame(size: NSSize(width: contentWidth, height: max(height, 40)),
                                                 of: panel.frame, direction: state.direction)
         panel.setFrame(clamped(frame, to: screen), display: true)
     }
 
+    private func updateMascotSize(for visible: NSRect) -> Bool {
+        let side = PanelGeometry.mascotSide(baseSide: CorgiView.side,
+                                            scalePercent: state.dogScalePercent, in: visible)
+        guard abs(side - mascotSide) > 0.5 else { return false }
+        mascotSide = side
+        corgiWidthConstraint.constant = side
+        corgiHeightConstraint.constant = side
+        corgi.setNeedsDisplay(corgi.bounds)
+        return true
+    }
+
     private func restingSize(in visible: NSRect) -> NSSize {
-        NSSize(width: min(CorgiView.side + 16, visible.width),
-               height: min(Self.mascotFooter, visible.height * 0.4))
+        NSSize(width: min(mascotSide + 16, visible.width),
+               height: min(mascotFooter, visible.height * 0.4))
     }
 
     private func placeFromState() {
         let saved = NSScreen.screens.first { number(of: $0) == state.screen }
         guard let screen = saved ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let visible = screen.visibleFrame
+        if updateMascotSize(for: visible) { rebuildContent() }
         var frame = panel.frame
         if saved != nil, let left = state.left, let top = state.top {
             let size = state.autoHide || state.mascotAnchored ? restingSize(in: visible) : frame.size
@@ -733,7 +792,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func clamped(_ frame: NSRect, to screen: NSScreen) -> NSRect {
         state.autoHide
-            ? PanelGeometry.autoHideFrame(frame, expandedWidth: Self.width,
+            ? PanelGeometry.autoHideFrame(frame, expandedWidth: max(Self.width, contentWidth),
                                           direction: state.direction, in: screen.visibleFrame)
             : PanelGeometry.clamp(frame, to: screen.visibleFrame)
     }
@@ -756,6 +815,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func windowDidMove(_ notification: Notification) {
         guard !adjustingFrame else { return }
+        if let screen = currentScreen, updateMascotSize(for: screen.visibleFrame) { rebuildContent() }
         resize()
         recordPosition()
         saveState()
@@ -765,6 +825,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     @objc private func screensChanged() {
         guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(panel.frame) })
                 ?? NSScreen.main ?? NSScreen.screens.first else { return }
+        if updateMascotSize(for: screen.visibleFrame) { rebuildContent() }
         resize(to: screen)
         recordPosition()
         saveState()

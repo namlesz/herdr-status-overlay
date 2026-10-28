@@ -12,6 +12,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var toggleItem: NSMenuItem?
     private var autoHideItem: NSMenuItem?
+    private var dogScaleItem: NSMenuItem?
     private var timer: Timer?
     private var stopping = false
     private let focusQueue = DispatchQueue(label: "overlay.focus")
@@ -109,6 +110,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         autoHide.state = panel.isAutoHideEnabled ? .on : .off
         menu.addItem(autoHide)
         autoHideItem = autoHide
+        let dogScale = NSMenuItem(title: "Dog scale: \(panel.dogScalePercent)%…", action: #selector(changeDogScale), keyEquivalent: "")
+        dogScale.target = self
+        menu.addItem(dogScale)
+        dogScaleItem = dogScale
         let position = NSMenuItem(title: "Panel position", action: nil, keyEquivalent: "")
         let positions = NSMenu()
         for direction in PanelDirection.allCases {
@@ -142,6 +147,32 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc private func toggleAutoHide() {
         panel.setAutoHide(!panel.isAutoHideEnabled)
         autoHideItem?.state = panel.isAutoHideEnabled ? .on : .off
+    }
+
+    @objc private func changeDogScale() {
+        let field = NSTextField(string: "\(panel.dogScalePercent)")
+        field.setAccessibilityLabel("Dog scale percentage")
+        field.placeholderString = "25–300"
+        field.frame = NSRect(x: 0, y: 0, width: 180, height: 24)
+        let alert = NSAlert()
+        alert.messageText = "Dog scale"
+        alert.informativeText = "Enter a whole-number percentage from 25 to 300."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let percent = PanelState.parseDogScalePercent(field.stringValue) else {
+            let error = NSAlert()
+            error.messageText = "Invalid dog scale"
+            error.informativeText = "Enter a whole number from 25 to 300. The scale was not changed."
+            error.addButton(withTitle: "OK")
+            error.runModal()
+            return
+        }
+        panel.setDogScalePercent(percent)
+        dogScaleItem?.title = "Dog scale: \(panel.dogScalePercent)%…"
     }
 
     @objc private func selectDirection(_ sender: NSMenuItem) {

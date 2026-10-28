@@ -230,9 +230,91 @@ do {
     moodViews = moodSnapshot([agent("w1:p1", "idle", seq: 2)], at: 4)
     check(MascotMood.select(in: moodViews, now: seconds(4)) == .celebrating, "completion marker selects celebration")
     check(MascotMood.select(in: moodViews, now: seconds(7)) == .sleeping, "celebration expires after three seconds")
+    moodViews = moodSnapshot([agent("w1:p1", "working"), agent("w1:p2", "working")], at: 8)
+    check(MascotMood.select(in: moodViews, now: seconds(8)) == .pairWorking, "two fresh working agents select pair scenes")
+    moodViews = moodSnapshot([agent("w1:p1", "working"), agent("w1:p2", "working"), agent("w1:p3", "done")], at: 8)
+    check(MascotMood.workingCount(in: moodViews) == 2,
+          "a completion event does not change pair eligibility while two agents still work")
+    moodViews = moodSnapshot([agent("w1:p1", "working")], at: 8)
+    check(MascotMood.select(in: moodViews, now: seconds(8)) == .working, "one working agent keeps solo scenes")
+    moodViews = moodSnapshot([agent("w1:p1", "working"), agent("w1:p2", "working"), agent("w1:p3", "blocked")], at: 8)
+    check(MascotMood.select(in: moodViews, now: seconds(8)) == .blocked, "STOP takes priority over pair scenes")
     moodStore.fail("local", generation: moodStore.begin("local"), failure: .timeout)
     check(MascotMood.select(in: moodStore.view(now: seconds(8)), now: seconds(8)) == .unavailable,
           "stale-only sources select unavailable mascot")
+
+    var pairBag = PairActivityBag()
+    let pairTurns = (0..<24).map { _ in pairBag.next() }
+    for start in stride(from: 0, to: pairTurns.count, by: PairActivity.allCases.count) {
+        check(Set(pairTurns[start..<(start + PairActivity.allCases.count)]) == Set(PairActivity.allCases),
+              "pair activity bag uses every scene once")
+    }
+    check(zip(pairTurns, pairTurns.dropFirst()).allSatisfy { $0.0 != $0.1 },
+          "pair activity bag never repeats at a bag boundary")
+
+    var pair = MascotPairAnimation()
+    check(pair.frame(reduceMotion: false) == nil, "zero pair request stays solo")
+    pair.setActive(true, reduceMotion: false)
+    check(pair.frame(reduceMotion: false) == .pairEnter0, "two-agent transition begins with entry")
+    for _ in 0..<8 { pair.tick() }
+    let firstPairFrame = pair.frame(reduceMotion: false)
+    let pairFrames = (0..<32).map { _ -> MascotFrame in
+        let frame = pair.frame(reduceMotion: false)!
+        pair.tick()
+        return frame
+    }
+    check((0..<16).allSatisfy { pairFrames[$0 * 2] == pairFrames[$0 * 2 + 1] },
+          "pair activities animate at four frames per second")
+    check((0..<3).allSatisfy { pairFrames[$0 * 2] != pairFrames[$0 * 2 + 2] }
+          && pairFrames[0] == pairFrames[8], "pair activity advances through four frames and loops over 32 ticks")
+    let frameBeforeCelebration = pair.frame(reduceMotion: false)
+    pair.setActive(true, reduceMotion: false)
+    check(pair.frame(reduceMotion: false) == frameBeforeCelebration,
+          "completion with two working agents preserves the current pair activity")
+    check(firstPairFrame != nil && ![.pairEnter0, .pairEnter1, .pairEnter2, .pairEnter3].contains(firstPairFrame!),
+          "entry transitions to shared activity")
+    pair.setActive(false, reduceMotion: false)
+    check(pair.frame(reduceMotion: false) == .pairExit0 && pair.isExiting,
+          "falling below two during celebration keeps the pair exit visible")
+    pair.setActive(true, reduceMotion: false)
+    check(pair.frame(reduceMotion: false) == .pairEnter0, "rapid reversal replaces exit with a fresh entry")
+    pair.interrupt()
+    check(pair.frame(reduceMotion: false) == nil && !pair.needsTicks, "STOP or celebration interrupts stale pair art")
+    pair.setActive(true, reduceMotion: true)
+    let stillPair = pair.frame(reduceMotion: true)
+    pair.tick()
+    check(stillPair != nil && pair.frame(reduceMotion: true) == stillPair && !pair.needsTicks,
+          "Reduce Motion holds a static pair pose without transition ticks")
+    pair.setActive(false, reduceMotion: true)
+    check(pair.frame(reduceMotion: true) == nil, "Reduce Motion clears the pair immediately below two")
+    var deferredPair = MascotPairAnimation()
+    deferredPair.setActive(true, reduceMotion: false)
+    for _ in 0..<32 { deferredPair.tick(visible: false) }
+    check(deferredPair.frame(reduceMotion: false) == .pairEnter0,
+          "hidden pair entry pauses during celebration or a Space flip")
+    for _ in 0..<7 { deferredPair.tick(visible: true) }
+    check(deferredPair.frame(reduceMotion: false) == .pairEnter3,
+          "pair entry resumes from its first visible frames")
+    deferredPair.tick(visible: true)
+    check(deferredPair.frame(reduceMotion: false) != .pairEnter0,
+          "pair activity starts only after its visible entry completes")
+    for ticks in [0, 1] {
+        var cancelledPair = MascotPairAnimation()
+        cancelledPair.setActive(true, reduceMotion: false)
+        for _ in 0..<ticks { cancelledPair.tick() }
+        for _ in 0..<24 { cancelledPair.tick(visible: false) }
+        cancelledPair.setActive(false, reduceMotion: false)
+        check(cancelledPair.frame(reduceMotion: false) == nil && !cancelledPair.needsTicks,
+              "cancelling entry before the friend appears does not invent a visible exit")
+    }
+    var appearedPair = MascotPairAnimation()
+    appearedPair.setActive(true, reduceMotion: false)
+    appearedPair.tick()
+    appearedPair.tick()
+    appearedPair.setActive(false, reduceMotion: false)
+    check(appearedPair.frame(reduceMotion: false) == .pairExit0,
+          "cancelling after the friend appears still plays the exit")
+
 
     // Each work sequence retains its duration and speed, but successors are random and distinct.
     let activityFrames: [[MascotFrame]] = [
@@ -263,7 +345,7 @@ do {
         }
     }
     let flipFrames: [MascotFrame] = [.flip0, .flip1, .flip2, .flip3]
-    for mood in [MascotMood.sleeping, .working, .unavailable, .celebrating] {
+    for mood in [MascotMood.sleeping, .working, .pairWorking, .unavailable, .celebrating] {
         check((0..<8).map {
             MascotAnimation.flipFrame(for: mood, elapsed: Double($0) * 0.125, reduceMotion: false)
         } == flipFrames.flatMap { [Optional($0), Optional($0)] }, "Space flip plays exactly once for one second")
@@ -283,7 +365,7 @@ do {
         check(Set((0..<48).map { MascotAnimation.frame(for: mood, tick: $0, reduceMotion: false) }).count == 1,
               "\(mood) keeps its single state frame")
     }
-    for mood in [MascotMood.sleeping, .working, .blocked, .unavailable, .celebrating] {
+    for mood in [MascotMood.sleeping, .working, .pairWorking, .blocked, .unavailable, .celebrating] {
         check(!MascotAnimation.isAnimated(for: mood, reduceMotion: true),
               "Reduce Motion needs no animation timer for \(mood)")
         check(MascotAnimation.isAnimated(for: mood, reduceMotion: false) == (mood != .unavailable),
@@ -336,6 +418,21 @@ do {
     let legacy = Data(#"{"visible":false,"screen":7,"left":42,"top":18}"#.utf8)
     var state = try! JSONDecoder().decode(PanelState.self, from: legacy)
     check(!state.minimized && !state.visible, "legacy panel state preserves visibility and defaults to expanded")
+    check(state.dogScalePercent == 100, "legacy panel state defaults dog scale to 100 percent")
+    for scale in [50, 100, 150, 200, 300] {
+        state.dogScalePercent = scale
+        let decoded = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
+        check(decoded.dogScalePercent == scale, "dog scale \(scale) percent round-trips")
+    }
+    for invalid in [#"{"dogScalePercent":24}"#, #"{"dogScalePercent":301}"#,
+                    #"{"dogScalePercent":"150"}"#, #"{"dogScalePercent":150.5}"#] {
+        let decoded = try! JSONDecoder().decode(PanelState.self, from: Data(invalid.utf8))
+        check(decoded.dogScalePercent == 100, "invalid saved dog scale falls back to 100 percent")
+    }
+    check(PanelState.parseDogScalePercent(" 150 ") == 150, "dog scale accepts a trimmed whole-number percentage")
+    for invalid in ["", "abc", "100.5", "24", "301"] {
+        check(PanelState.parseDogScalePercent(invalid) == nil, "dog scale rejects invalid input \(invalid)")
+    }
     check(state.screen == 7 && state.left == 42 && state.top == 18, "legacy panel placement survives migration")
     check(state.direction == .topLeft && !state.mascotAnchored, "legacy panel direction and placement format default safely")
     state.mascotAnchored = true
@@ -518,6 +615,24 @@ do {
 // MARK: Panel geometry (no AppKit or GUI)
 
 do {
+    for scale in [50, 100, 150, 200, 300] {
+        check(PanelGeometry.mascotSide(baseSide: 96, scalePercent: scale,
+                                       in: CGRect(x: 0, y: 0, width: 1920, height: 1080)) == CGFloat(96 * scale) / 100,
+              "dog scale uses the selected percentage on a large screen")
+    }
+    let heightLimited = PanelGeometry.mascotSide(baseSide: 96, scalePercent: 300,
+                                                  in: CGRect(x: 0, y: 0, width: 180, height: 100))
+    check(heightLimited == 36 && heightLimited + 4 <= 100 * 0.4,
+          "large dog scale respects the panel 40 percent height cap")
+    let shortVisible = CGRect(x: 0, y: 0, width: 1920, height: 700)
+    let shortDog = PanelGeometry.mascotSide(baseSide: 96, scalePercent: 300, in: shortVisible)
+    let shortViewport = shortVisible.height * 0.4 - (shortDog + 4)
+    check(shortDog == 196 && shortViewport >= 80,
+          "300 percent dog scale reserves an 80 pt content viewport on a 700 pt screen")
+    let widthLimited = PanelGeometry.mascotSide(baseSide: 96, scalePercent: 300,
+                                                 in: CGRect(x: 0, y: 0, width: 80, height: 400))
+    check(widthLimited == 64 && widthLimited + 16 <= 80,
+          "large dog scale leaves safe horizontal screen margins")
     let small = CGRect(x: 0, y: 0, width: 800, height: 600)
     let largeFrame = CGRect(x: 700, y: 900, width: 340, height: 800)
     let moved = PanelGeometry.clamp(largeFrame, to: small)

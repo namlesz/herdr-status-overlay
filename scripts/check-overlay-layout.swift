@@ -38,6 +38,14 @@ struct OverlayLayoutCheck {
             root.layoutSubtreeIfNeeded()
             return panel.convertToScreen(dog.convert(dog.bounds, to: nil))
         }
+        func dogFrame(of controller: PanelController) -> NSRect {
+            let children = Mirror(reflecting: controller).children
+            let panel = children.first { $0.label == "panel" }!.value as! NSPanel
+            let root = panel.contentView!
+            let dog = children.first { $0.label == "corgi" }!.value as! NSView
+            root.layoutSubtreeIfNeeded()
+            return panel.convertToScreen(dog.convert(dog.bounds, to: nil))
+        }
         var store = Store(sources: [.local(executable: "/fake")])
         for direction in PanelDirection.allCases {
             controller.setDirection(direction)
@@ -165,6 +173,15 @@ struct OverlayLayoutCheck {
         func containsText(_ text: String, in view: NSView) -> Bool {
             (view as? NSTextField)?.stringValue == text || view.subviews.contains { containsText(text, in: $0) }
         }
+        func textValues(in view: NSView) -> [String] {
+            let own = (view as? NSTextField).map { [$0.stringValue] } ?? []
+            return own + view.subviews.flatMap(textValues)
+        }
+        func cardWidth() -> CGFloat? {
+            root.layoutSubtreeIfNeeded()
+            let stack = scroll.documentView?.subviews.compactMap { $0 as? NSStackView }.first
+            return stack?.arrangedSubviews.first?.frame.width
+        }
         try renderCompact(title: "Before", sequence: 1)
         let unchangedCloud = cloud(in: root)!
         try renderCompact(title: "Latest activity", sequence: 1)
@@ -191,6 +208,78 @@ struct OverlayLayoutCheck {
                 "hidden panel must not run an animation or hover timer")
         require(timers.first { $0.label == "celebrationTimer" }!.value as! Timer? == nil,
                 "hidden panel must not schedule celebration expiry")
+        let scaleScreen = panel.screen!.visibleFrame
+        func dogAnchor(_ frame: NSRect, _ direction: PanelDirection) -> NSPoint {
+            NSPoint(x: direction.extendsLeft ? frame.maxX : frame.minX,
+                    y: direction.extendsUp ? frame.minY : frame.maxY)
+        }
+        for autoHide in [true, false] {
+            controller.setAutoHide(autoHide)
+            for minimized in (autoHide ? [false] : [false, true]) {
+                let savedState = Mirror(reflecting: controller).children.first { $0.label == "state" }!.value as! PanelState
+                if !autoHide && savedState.minimized != minimized {
+                    controller.perform(NSSelectorFromString("toggleMinimized"))
+                }
+                controller.setDogScalePercent(100)
+                controller.render(compactStore.view(now: now + seconds(7)))
+                for direction in PanelDirection.allCases {
+                    controller.setDirection(direction)
+                    panel.setFrameOrigin(NSPoint(x: scaleScreen.midX - panel.frame.width / 2,
+                                                 y: scaleScreen.midY - panel.frame.height / 2))
+                    controller.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
+                    let anchor = dogAnchor(dogFrame(), direction)
+                    let originalTexts = textValues(in: root)
+                    let originalCardWidth = cardWidth()
+                    let originalCloudWidth = autoHide ? cloud(in: root)?.bounds.width : nil
+                    for scale in [50, 100, 150, 200, 300] {
+                        controller.setDogScalePercent(scale)
+                        let frame = dogFrame()
+                        let expectedSide = PanelGeometry.mascotSide(baseSide: 96, scalePercent: scale,
+                                                                    in: scaleScreen)
+                        require(abs(frame.width - expectedSide) < 0.5 && abs(frame.height - expectedSide) < 0.5,
+                                "dog scene uses the selected scale, bounded by available screen space: \(scale)%")
+                        let afterAnchor = dogAnchor(frame, direction)
+                        require(abs(afterAnchor.x - anchor.x) < 0.5 && abs(afterAnchor.y - anchor.y) < 0.5,
+                                "dog scale preserves its anchor in \(direction)")
+                        require(textValues(in: root) == originalTexts,
+                                "dog scaling leaves cloud, text and card labels unchanged")
+                        require(cardWidth().map { abs($0 - (originalCardWidth ?? $0)) < 0.5 } == true,
+                                "dog scaling does not resize cards")
+                        if let originalCloudWidth {
+                            require(abs((cloud(in: root)?.bounds.width ?? -1) - originalCloudWidth) < 0.5,
+                                    "dog scaling does not resize the counter cloud")
+                        }
+                        if scale == 300 {
+                            if !autoHide && !minimized {
+                                require(scroll.contentView.bounds.height >= 80,
+                                        "expanded list keeps an 80 pt scroll viewport at 300 percent")
+                            }
+                            if autoHide, let bubble = cloud(in: root) {
+                                let bubbleFrame = bubble.convert(bubble.bounds, to: scroll.contentView)
+                                require(scroll.contentView.bounds.insetBy(dx: -0.5, dy: -0.5).contains(bubbleFrame),
+                                        "compact counters stay visible beside the 300 percent dog")
+                            }
+                        }
+                    }
+                    controller.setDogScalePercent(100)
+                }
+                controller.setDogScalePercent(200)
+                controller.saveState()
+                let originalDog = dogFrame()
+                let restored = PanelController(stateFile: url)
+                restored.render(compactStore.view(now: now + seconds(7)))
+                let restoredPanel = Mirror(reflecting: restored).children.first { $0.label == "panel" }!.value as! NSPanel
+                let restoredDog = dogFrame(of: restored)
+                require(restored.dogScalePercent == 200 && abs(restoredDog.width - originalDog.width) < 0.5,
+                        "custom scale and dog size survive restart: autoHide=\(autoHide), minimized=\(minimized)")
+                require(abs(restoredPanel.frame.minX - panel.frame.minX) < 0.5
+                        && abs(restoredPanel.frame.minY - panel.frame.minY) < 0.5,
+                        "scaled dog panel placement survives restart")
+            }
+        }
+        controller.setDogScalePercent(301)
+        require(controller.dogScalePercent == 200, "out-of-range programmatic scale leaves preference unchanged")
+        controller.setDogScalePercent(100)
         print("Overlay AppKit layout checks passed (four directions, dynamic cloud, restoration, both scrollbar styles and edge dragging).")
     }
 }

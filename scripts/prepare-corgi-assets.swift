@@ -28,6 +28,10 @@ groups += [
         ("states-sheet", [("standing", 1, 1)]),
     ]
 
+let pairGroups: [(sheet: String, frames: [(name: String, column: Int, row: Int)])] =
+    ["chase", "tug", "fetch", "wrestle", "hop", "dig", "splash", "steal", "enter", "exit"].map { activity in
+        ("pair-\(activity)-sheet", (0..<4).map { ("pair-\(activity)-\($0)", $0 % 2, $0 / 2) })
+    }
 struct Box {
     var minX = Int.max, minY = Int.max, maxX = Int.min, maxY = Int.min
     var width: Int { maxX - minX + 1 }
@@ -135,6 +139,27 @@ for (index, group) in groups.enumerated() {
         frames.append((frame.name, result))
     }
 }
+// Pair scenes use their own shared scale; the legacy frame scale above stays byte-for-byte stable.
+let pairLoaded = Dictionary(uniqueKeysWithValues: Set(pairGroups.map(\.sheet)).map { ($0, rgba(load($0))) })
+let pairKeyed = pairGroups.map { group in group.frames.map { key(pairLoaded[group.sheet]!, column: $0.column, row: $0.row) } }
+let pairUnions = pairKeyed.map { cells in cells.dropFirst().reduce(into: cells[0].box) { $0.add($1.box) } }
+let pairLargest = pairUnions.map { max($0.width, $0.height) }.max()!
+let pairScale = Double(canvas - padding * 2) / Double(pairLargest)
+for (index, group) in pairGroups.enumerated() {
+    let union = pairUnions[index]
+    let drawnWidth = Double(cell) * pairScale
+    let originX = Double(canvas) / 2 - (Double(union.minX) + Double(union.width) / 2) * pairScale
+    let originY = Double(padding) - Double(cell - 1 - union.maxY) * pairScale
+    for (frame, keyedCell) in zip(group.frames, pairKeyed[index]) {
+        let target = context(width: canvas, height: canvas)
+        target.draw(image(keyedCell.pixels, width: cell, height: cell),
+                    in: CGRect(x: originX, y: originY, width: drawnWidth, height: drawnWidth))
+        let result = target.makeImage()!
+        write(result, to: output.appendingPathComponent(frame.name + ".png"))
+        frames.append((frame.name, result))
+    }
+}
+
 
 // Verification: alpha present, transparent perimeter, no visible green left.
 for (name, frame) in frames {

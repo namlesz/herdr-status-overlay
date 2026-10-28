@@ -1,8 +1,17 @@
 import Foundation
 import CoreGraphics
 
+
 /// Pure screen bounds calculation shared by the AppKit panel and headless checks.
 public enum PanelGeometry {
+    public static func mascotSide(baseSide: CGFloat, scalePercent: Int, in visibleFrame: CGRect) -> CGFloat {
+        let requested = baseSide * CGFloat(scalePercent) / 100
+        let maxPanelHeight = visibleFrame.height * 0.4
+        let contentViewport = min(80, max(0, maxPanelHeight - 4 - baseSide))
+        let available = min(max(0, visibleFrame.width - 16), max(0, maxPanelHeight - 4 - contentViewport))
+        return min(requested, available)
+    }
+
     public static func anchoredFrame(size: CGSize, of frame: CGRect, direction: PanelDirection) -> CGRect {
         CGRect(x: direction.extendsLeft ? frame.maxX - size.width : frame.minX,
                y: direction.extendsUp ? frame.minY : frame.maxY - size.height,
