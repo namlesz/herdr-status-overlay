@@ -406,7 +406,8 @@ do {
         check(pixels.enumerated().contains { $0.offset % 4 == 3 && $0.element > 128 },
               "\(frame.resourceName).png contains visible artwork")
         let edge = (0..<image.width).flatMap { [($0, 0), ($0, image.height - 1), (0, $0), (image.width - 1, $0)] }
-        check(image.width == image.height && image.alphaInfo != .none, "\(frame.resourceName).png is square with alpha")
+        check(image.width == 512 && image.height == 512 && image.alphaInfo != .none,
+              "\(frame.resourceName).png is 512×512 with alpha")
         check(edge.allSatisfy { pixels[($0.1 * image.width + $0.0) * 4 + 3] == 0 },
               "\(frame.resourceName).png has a transparent perimeter")
     }

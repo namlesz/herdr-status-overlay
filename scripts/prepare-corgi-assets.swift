@@ -7,8 +7,8 @@ import ImageIO
 import UniformTypeIdentifiers
 
 let cell = 512
-let canvas = 256
-let padding = 8
+let canvas = 512
+let padding = 16
 let output = URL(fileURLWithPath: "Sources/OverlayApp/Resources/Corgi")
 let sheets = URL(fileURLWithPath: "Art/dog")
 

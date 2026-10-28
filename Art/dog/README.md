@@ -15,7 +15,7 @@ Each `*-sheet.png` is a 1024×1024 green-screen image with four 512×512 cells i
 - `pair-enter`, `pair-exit`: second dog entering and leaving (each four frames).
 
 The second dog appears when at least two fresh agents are working and leaves when the count falls below two. Completion celebration remains after the exit; STOP interrupts immediately. Pair activity sheets use one shared crop and scale of their own so the original solo PNGs remain byte-identical when regenerated.
-Regenerate transparent 256×256 frames from the repository root:
+Regenerate transparent 512×512 frames from the repository root:
 
 ```sh
 swift scripts/prepare-corgi-assets.swift
