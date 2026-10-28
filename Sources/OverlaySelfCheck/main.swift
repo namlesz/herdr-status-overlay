@@ -17,6 +17,8 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String, line: Int = #li
     }
 }
 
+checkServerLifetime()
+
 do {
     check(ThoughtBubble.opacity == 0.22, "thought cloud uses the approved 22 percent opacity")
     for width in [CGFloat(112), 240, 420] {

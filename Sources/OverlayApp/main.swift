@@ -2,8 +2,7 @@ import AppKit
 import Darwin
 import OverlayCore
 
-// Started by the plugin pane (bin/run-helper). Stays in the foreground of that pane:
-// closing the pane (SIGHUP), SIGTERM/SIGINT or Quit stops the reads and exits. Agents are untouched.
+// Started without a terminal by bin/open-overlay; server exit or Quit stops reads, not agents.
 
 func die(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -19,6 +18,13 @@ guard environment["HERDR_SOCKET_PATH"] != nil,
       let configDir = environment["HERDR_PLUGIN_CONFIG_DIR"] else {
     die("Brak kontekstu pluginu (HERDR_SOCKET_PATH, HERDR_PLUGIN_STATE_DIR, HERDR_PLUGIN_CONFIG_DIR).")
 }
+guard let rawPID = environment["HERDR_OVERLAY_SERVER_PID"], let serverPID = pid_t(rawPID), serverPID > 1 else {
+    die("Brak PID serwera: uruchom overlay akcją pluginu Herdr.")
+}
+guard setsid() >= 0 else { die("Nie można odłączyć overlayu od terminala.") }
+var stopOverlay: () -> Void = { exit(0) }
+// Register before the handoff lock wait, so a later PID reuse cannot hide server exit.
+let serverWatch = ServerLifetime.watch(pid: serverPID) { stopOverlay() }
 let stateURL = URL(fileURLWithPath: stateDir, isDirectory: true)
 
 /// Held for the whole process lifetime; a second helper exits without touching the first.
@@ -35,11 +41,15 @@ func acquireInstanceLock() -> Int32 {
     guard fd >= 0, fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid() else {
         die("Niepoprawny plik blokady helper.lock.")
     }
-    if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-        print("Status overlay już działa w innym panelu.")
-        exit(0)
+    // During handoff the old helper needs a moment to drain reads and release its lock.
+    let attempts = environment["HERDR_PLUGIN_EVENT"] == "startup" ? 100 : 1
+    for attempt in 0..<attempts {
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 { return fd }
+        guard errno == EWOULDBLOCK else { die("Nie można zablokować helper.lock.") }
+        if attempt + 1 < attempts { Thread.sleep(forTimeInterval: 0.1) }
     }
-    return fd
+    print("Status overlay już działa.")
+    exit(0)
 }
 
 let instanceLock = acquireInstanceLock()
@@ -62,6 +72,7 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let controller = AppController(sources: sources, stateDirectory: stateURL)
 app.delegate = controller
+stopOverlay = { controller.shutdown() }
 
 var signalSources: [DispatchSourceSignal] = []
 for number in [SIGHUP, SIGTERM, SIGINT] {
@@ -73,5 +84,5 @@ for number in [SIGHUP, SIGTERM, SIGINT] {
 }
 
 print("Status overlay działa: lokalna sesja + \(machines.aliases.count) zapisanych maszyn.")
-print("Close this pane or choose “Quit overlay” in the HSO menu to stop it.")
+print("Choose “Quit overlay” in the HSO menu to stop it.")
 app.run()

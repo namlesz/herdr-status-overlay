@@ -1,9 +1,12 @@
 #!/bin/sh
-# Runs the helper in the foreground of the plugin pane. No daemon, no detaching.
+# Return immediately; the helper watches the server PID and has no terminal.
 set -eu
 helper="$HERDR_PLUGIN_ROOT/.build/release/HerdrStatusOverlay"
 if [ ! -x "$helper" ]; then
     echo "Brak zbudowanego helpera. Zbuduj go: swift build -c release (w katalogu pluginu)." >&2
     exit 1
 fi
-exec "$helper"
+: "${HERDR_OVERLAY_SERVER_PID:?Uruchom przez bin/open-overlay}"
+umask 077
+mkdir -p "$HERDR_PLUGIN_STATE_DIR"
+nohup "$helper" </dev/null >>"$HERDR_PLUGIN_STATE_DIR/helper.log" 2>&1 &

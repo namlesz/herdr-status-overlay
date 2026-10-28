@@ -1,5 +1,5 @@
 #!/bin/sh
-# Opens the plugin's helper pane without taking focus; the action returns immediately.
+# Herdr 0.9.5 spawns startup/action commands directly; capture its PID before detaching.
 set -eu
-exec "$HERDR_BIN_PATH" plugin pane open --plugin "$HERDR_PLUGIN_ID" --entrypoint helper \
-    --placement tab --no-focus
+export HERDR_OVERLAY_SERVER_PID="$PPID"
+exec "$HERDR_PLUGIN_ROOT/bin/run-helper"
