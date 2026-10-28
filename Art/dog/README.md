@@ -6,6 +6,7 @@ Each `*-sheet.png` is a 1024×1024 green-screen image with four 512×512 cells i
 
 - `run`, `sniff`: existing working activities, redrawn with the new dog.
 - `splash`, `dig`, `tug`, `roll`, `fetch`: additional working activities.
+- `flip`: one-shot Space-change somersault: preparation, tucked take-off, inverted rotation, landing (one second total).
 - `blocked`: standing dog holding a readable STOP sign, with gentle head/tail movement and a blink.
 - `states`: sleeping (top left), unavailable/head tilt (top right), celebrating (bottom left), still working (bottom right).
 

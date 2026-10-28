@@ -150,6 +150,47 @@ struct OverlayLayoutCheck {
             root.layoutSubtreeIfNeeded()
             require(cloud(in: root) != nil, "stale data stays distinguishable from no active agents")
         }
+        // Row-only changes must keep compact views alive, but still reach the expanded list and mascot.
+        let now = MonotonicClock.now()
+        var compactStore = Store(sources: [.local(executable: "/fake")])
+        func renderCompact(title: String, sequence: Int) throws {
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["agents": [
+                ["pane_id": "busy", "agent_status": "working", "terminal_title_stripped": title],
+                ["pane_id": "finished", "agent_status": "done", "completion_seq": sequence]
+            ]]])
+            compactStore.succeed("local", generation: compactStore.begin("local"),
+                                 agents: try AgentListParser.parse(data), now: now)
+            controller.render(compactStore.view(now: now))
+        }
+        func containsText(_ text: String, in view: NSView) -> Bool {
+            (view as? NSTextField)?.stringValue == text || view.subviews.contains { containsText(text, in: $0) }
+        }
+        try renderCompact(title: "Before", sequence: 1)
+        let unchangedCloud = cloud(in: root)!
+        try renderCompact(title: "Latest activity", sequence: 1)
+        require(cloud(in: root) === unchangedCloud, "title-only changes must not rebuild the cloud")
+        try renderCompact(title: "Latest activity", sequence: 2)
+        require(cloud(in: root) === unchangedCloud, "new completion with equal counters keeps the cloud")
+        let mood = Mirror(reflecting: controller).children.first { $0.label == "mood" }!.value as! MascotMood?
+        require(mood == .celebrating, "equal counters must still deliver new completion events to the mascot")
+        controller.setAutoHide(false)
+        require(containsText("Latest activity", in: root), "expansion must show the latest cached row data")
+        controller.perform(NSSelectorFromString("toggleMinimized"))
+        let compactCard = scroll.documentView!.subviews[0].subviews[0]
+        try renderCompact(title: "Manual latest activity", sequence: 2)
+        require(scroll.documentView!.subviews[0].subviews[0] === compactCard,
+                "manual compact mode also preserves its content for row-only changes")
+        controller.perform(NSSelectorFromString("toggleMinimized"))
+        require(containsText("Manual latest activity", in: root), "manual expansion uses latest row data")
+        controller.setAutoHide(true)
+        controller.render(compactStore.view(now: now + seconds(7)))
+        require(cloud(in: root) !== unchangedCloud, "freshness changes must rebuild compact content")
+        require(!panel.isVisible, "optimization checks never display a window")
+        let timers = Mirror(reflecting: controller).children
+        require(timers.first { $0.label == "animationTimer" }!.value as! Timer? == nil,
+                "hidden panel must not run an animation or hover timer")
+        require(timers.first { $0.label == "celebrationTimer" }!.value as! Timer? == nil,
+                "hidden panel must not schedule celebration expiry")
         print("Overlay AppKit layout checks passed (four directions, dynamic cloud, restoration, both scrollbar styles and edge dragging).")
     }
 }

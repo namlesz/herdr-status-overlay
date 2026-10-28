@@ -14,7 +14,7 @@ let sheets = URL(fileURLWithPath: "Art/dog")
 
 /// Each sequence shares a crop box so motion between its 2×2 cells survives the cut.
 var groups: [(sheet: String, frames: [(name: String, column: Int, row: Int)])] = []
-for activity in ["run", "sniff", "splash", "dig", "tug", "roll", "fetch", "blocked"] {
+for activity in ["run", "sniff", "splash", "dig", "tug", "roll", "fetch", "blocked", "flip"] {
     let frames: [(name: String, column: Int, row: Int)] = (0..<4).map { index in
         let name = activity == "blocked" && index == 0 ? "blocked" : "\(activity)-\(index)"
         return (name, index % 2, index / 2)

@@ -176,10 +176,13 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var rendered: [SectionView]?
     private let corgi = CorgiView(frame: NSRect(x: 0, y: 0, width: CorgiView.side, height: CorgiView.side))
     private var animationTimer: Timer?
+    private var celebrationTimer: Timer?
     private var hover = AutoHideHover()
     private var compact: Bool { state.showsCompact(hovered: hover.expanded) }
     private var mood: MascotMood?
     private var tick = 0
+    private var workActivity = MascotActivity.allCases.randomElement()!
+    private var flipStartedAt: TimeInterval?
     private var mascotCornerConstraints: [NSLayoutConstraint] = []
     private var scrollBottom: NSLayoutConstraint!
     private var scrollTop: NSLayoutConstraint!
@@ -202,6 +205,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification,
                                                object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateCorgiMood),
+                                                          name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+                                                          object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activeSpaceChanged),
+                                                          name: NSWorkspace.activeSpaceDidChangeNotification,
+                                                          object: nil)
     }
 
     /// User preference, independent of automatic hiding when no cards are available.
@@ -258,12 +267,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
     }
 
-    /// Rebuilds only when the view model changed; heartbeats with equal data do nothing.
+    /// Compact content depends on counters and availability, not agent titles or row order.
     func render(_ sections: [SectionView]) {
         let sections = sections.filter(\.shouldDisplay)
         guard sections != rendered else { return }
+        let sameSummary = compact && rendered.map { previous in
+            previous.isEmpty == sections.isEmpty
+                && SectionView.activeCounts(in: previous) == SectionView.activeCounts(in: sections)
+                && previous.filter(\.stale).map(\.label) == sections.filter(\.stale).map(\.label)
+        } == true
         rendered = sections
-        rebuildContent()
+        if sameSummary { updateCorgiMood() } else { rebuildContent() }
     }
 
     private func rebuildContent() {
@@ -289,13 +303,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if visible == panel.isVisible { return }
         if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
         if !visible { hover = AutoHideHover(); rebuildContent() }
-        // The mascot animates only while the panel is on screen.
-        animationTimer?.invalidate()
-        animationTimer = visible ? Timer.scheduledTimer(withTimeInterval: MascotAnimation.tickInterval,
-                                                        repeats: true) { [weak self] _ in
-            self?.updateCorgiMood(advance: true)
-            self?.updateHover()
-        } : nil
+        updateCorgiMood()
     }
 
     // MARK: Panel setup
@@ -409,18 +417,74 @@ final class PanelController: NSObject, NSWindowDelegate {
         NSLayoutConstraint.activate(mascotCornerConstraints)
     }
 
-    /// A new mood restarts its animation; `advance` steps it unless Reduce Motion asks for a still frame.
-    private func updateCorgiMood(advance: Bool = false) {
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let mood = MascotMood.select(in: rendered ?? [], now: MonotonicClock.now())
+    @objc private func activeSpaceChanged() {
+        updateCorgiMood()
+        guard panel.isVisible, flipStartedAt == nil, let mood,
+              MascotAnimation.flipFrame(for: mood, elapsed: 0,
+                  reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) != nil else { return }
+        flipStartedAt = ProcessInfo.processInfo.systemUptime
+        updateCorgiMood()
+    }
+
+    /// Select mood on data changes or celebration expiry, never on every animation frame.
+    @objc private func updateCorgiMood() {
+        let now = MonotonicClock.now()
+        let sections = rendered ?? []
+        let mood = MascotMood.select(in: sections, now: now)
         if mood != self.mood {
             self.mood = mood
             tick = 0
+            if mood == .working { workActivity = MascotActivity.allCases.randomElement()! }
             corgi.setAccessibilityLabel("Dog: \(mood)")
-        } else if advance && !reduceMotion {
-            tick += 1
         }
-        corgi.show(MascotAnimation.frame(for: mood, tick: tick, reduceMotion: reduceMotion),
+        showCorgiFrame()
+        celebrationTimer?.invalidate()
+        celebrationTimer = nil
+        if panel.isVisible, mood == .celebrating,
+           let event = sections.filter({ $0.shouldDisplay && !$0.stale }).flatMap(\.rows)
+            .compactMap(\.completionEventAt).filter({ $0 <= now }).max() {
+            let remaining = Double(seconds(3) - (now - event)) / 1_000_000_000
+            celebrationTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
+                self?.updateCorgiMood()
+            }
+        }
+        let animate = MascotAnimation.isAnimated(for: mood,
+                          reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        if panel.isVisible && (state.autoHide || animate || flipStartedAt != nil) {
+            guard animationTimer == nil else { return }
+            animationTimer = Timer.scheduledTimer(withTimeInterval: MascotAnimation.tickInterval,
+                                                  repeats: true) { [weak self] _ in
+                guard let self else { return }
+                let wasFlipping = self.flipStartedAt != nil
+                if let mood = self.mood, MascotAnimation.isAnimated(for: mood,
+                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
+                    self.tick += 1
+                    if mood == .working && self.tick >= self.workActivity.durationTicks {
+                        self.workActivity = self.workActivity.randomSuccessor()
+                        self.tick = 0
+                    }
+                }
+                self.showCorgiFrame()
+                if wasFlipping && self.flipStartedAt == nil { self.updateCorgiMood() }
+                self.updateHover()
+            }
+        } else {
+            animationTimer?.invalidate()
+            animationTimer = nil
+        }
+    }
+
+    private func showCorgiFrame() {
+        guard let mood else { return }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if let startedAt = flipStartedAt, panel.isVisible,
+           let frame = MascotAnimation.flipFrame(for: mood,
+               elapsed: ProcessInfo.processInfo.systemUptime - startedAt, reduceMotion: reduceMotion) {
+            corgi.show(frame, lift: 0, sleepPhases: [])
+            return
+        }
+        flipStartedAt = nil
+        corgi.show(MascotAnimation.frame(for: mood, tick: tick, reduceMotion: reduceMotion, activity: workActivity),
                    lift: CGFloat(MascotAnimation.lift(for: mood, tick: tick, reduceMotion: reduceMotion)),
                    sleepPhases: mood == .sleeping ? MascotAnimation.sleepPhases(tick: tick, reduceMotion: reduceMotion) : [])
     }

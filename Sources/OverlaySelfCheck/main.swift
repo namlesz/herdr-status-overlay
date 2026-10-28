@@ -234,41 +234,48 @@ do {
     check(MascotMood.select(in: moodStore.view(now: seconds(8)), now: seconds(8)) == .unavailable,
           "stale-only sources select unavailable mascot")
 
-    // Work preserves running/sniffing, then rotates through all five requested games.
-    let tick = MascotAnimation.tickInterval
-    check(MascotAnimation.frame(for: .working, tick: 0, reduceMotion: false) == .run0, "work starts running")
-    check((0..<4).map { MascotAnimation.frame(for: .working, tick: $0, reduceMotion: false) }
-          == [.run0, .run1, .run2, .run3], "run cycle steps through four frames")
-    let sniffStart = Int(4 / tick)
-    check(MascotAnimation.frame(for: .working, tick: sniffStart - 1, reduceMotion: false) == .run3,
-          "running lasts four seconds")
-    check((0..<8).map { MascotAnimation.frame(for: .working, tick: sniffStart + $0, reduceMotion: false) }
-          == [.sniff0, .sniff0, .sniff1, .sniff1, .sniff2, .sniff2, .sniff3, .sniff3], "sniff cycle at half speed")
-    let games: [[MascotFrame]] = [
+    // Each work sequence retains its duration and speed, but successors are random and distinct.
+    let activityFrames: [[MascotFrame]] = [
+        [.run0, .run1, .run2, .run3], [.sniff0, .sniff1, .sniff2, .sniff3],
         [.splash0, .splash1, .splash2, .splash3], [.dig0, .dig1, .dig2, .dig3],
         [.tug0, .tug1, .tug2, .tug3], [.roll0, .roll1, .roll2, .roll3],
         [.fetch0, .fetch1, .fetch2, .fetch3],
     ]
-    for (index, frames) in games.enumerated() {
-        let start = Int((6 + Double(index) * 4) / tick)
-        let expected = (0..<32).map { frames[$0 / 2 % 4] }
-        check((0..<32).map { MascotAnimation.frame(for: .working, tick: start + $0, reduceMotion: false) } == expected,
-              "\(frames[0]) plays four distinct frames at 4 fps for four seconds")
+    for (activity, frames) in zip(MascotActivity.allCases, activityFrames) {
+        let duration = activity == .sniffing ? 16 : 32
+        check(activity.durationTicks == duration, "\(activity) retains its duration")
+        let expected = (0..<duration).map { frames[$0 / (activity == .running ? 1 : 2) % 4] }
+        check((0..<duration).map {
+            MascotAnimation.frame(for: .working, tick: $0, reduceMotion: false, activity: activity)
+        } == expected, "\(activity) plays its four frames at the original speed")
+        for _ in 0..<100 {
+            check(activity.randomSuccessor() != activity, "random activity never immediately repeats")
+        }
+        for t in [Int.min, -209, -5, 0, 7, 40, 1_000_003, Int.max] {
+            check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: true, activity: activity) == .standing,
+                  "Reduce Motion keeps every activity still")
+            check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: false, activity: activity)
+                  == MascotAnimation.frame(for: .working, tick: (t % duration + duration) % duration,
+                                           reduceMotion: false, activity: activity),
+                  "activity wraps safely for any tick")
+            check(MascotAnimation.frame(for: .blocked, tick: t, reduceMotion: true, activity: activity) == .blocked,
+                  "work activity never changes STOP")
+        }
     }
-    let workPeriod = Int(26 / tick)
-    check(MascotAnimation.frame(for: .working, tick: workPeriod, reduceMotion: false) == .run0,
-          "running resumes after every game")
-    check(MascotAnimation.frame(for: .working, tick: workPeriod - 1, reduceMotion: false) == .fetch3,
-          "last game finishes before wrapping")
-    for t in [Int.min, -209, -5, 0, 7, 40, 1_000_003, Int.max] {
-        check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: true) == .standing,
-              "Reduce Motion keeps working on a still standing frame")
-        check(MascotAnimation.frame(for: .working, tick: t, reduceMotion: false)
-              == MascotAnimation.frame(for: .working, tick: (t % workPeriod + workPeriod) % workPeriod, reduceMotion: false),
-              "work wraps safely for any tick")
-        check(MascotAnimation.frame(for: .blocked, tick: t, reduceMotion: true) == .blocked,
-              "Reduce Motion freezes the STOP pose")
+    let flipFrames: [MascotFrame] = [.flip0, .flip1, .flip2, .flip3]
+    for mood in [MascotMood.sleeping, .working, .unavailable, .celebrating] {
+        check((0..<8).map {
+            MascotAnimation.flipFrame(for: mood, elapsed: Double($0) * 0.125, reduceMotion: false)
+        } == flipFrames.flatMap { [Optional($0), Optional($0)] }, "Space flip plays exactly once for one second")
+        for elapsed in [-1, 1, 2, Double.infinity, -Double.infinity, Double.nan] {
+            check(MascotAnimation.flipFrame(for: mood, elapsed: elapsed, reduceMotion: false) == nil,
+                  "expired or invalid Space reactions return to normal animation")
+        }
+        check(MascotAnimation.flipFrame(for: mood, elapsed: 0.5, reduceMotion: true) == nil,
+              "Reduce Motion suppresses Space reaction")
     }
+    check(MascotAnimation.flipFrame(for: .blocked, elapsed: 0.5, reduceMotion: false) == nil,
+          "STOP interrupts and suppresses Space reaction")
     let stopFrames: [MascotFrame] = [.blocked, .blocked1, .blocked2, .blocked3]
     check((0..<32).map { MascotAnimation.frame(for: .blocked, tick: $0, reduceMotion: false) }
           == (0..<32).map { stopFrames[$0 % 16 / 4] }, "STOP animation loops at 2 fps without work frames")
@@ -277,6 +284,10 @@ do {
               "\(mood) keeps its single state frame")
     }
     for mood in [MascotMood.sleeping, .working, .blocked, .unavailable, .celebrating] {
+        check(!MascotAnimation.isAnimated(for: mood, reduceMotion: true),
+              "Reduce Motion needs no animation timer for \(mood)")
+        check(MascotAnimation.isAnimated(for: mood, reduceMotion: false) == (mood != .unavailable),
+              "only moving poses need animation ticks: \(mood)")
         check((0..<48).allSatisfy { MascotAnimation.lift(for: mood, tick: $0, reduceMotion: true) == 0 },
               "Reduce Motion stops \(mood) bobbing")
         check((0..<48).allSatisfy { (0...5).contains(MascotAnimation.lift(for: mood, tick: $0, reduceMotion: false)) },
@@ -473,25 +484,25 @@ do {
         return store.view(now: seconds(time))[0]
     }
     check(snapshot("done", 0).counts?[.done] == 1, "server done is finished on first snapshot")
-    check(snapshot("done", 599).rows.first?.status == .done, "repeated server done stays until TTL")
-    store.expire(now: seconds(600))
-    let expired = store.view(now: seconds(600))[0]
-    check(expired.rows.map(\.status) == [.idle] && expired.counts?[.idle] == 1, "server done expires exactly at 600 seconds")
-    check(snapshot("done", 600).rows.map(\.status) == [.idle], "unchanged server done does not restart expiry")
-    check(snapshot("working", 601).rows.first?.status == .working, "working row is visible")
-    check(snapshot("idle", 602).rows.map(\.status) == [.idle], "working clears old completion")
-    check(snapshot("done", 603).counts?[.done] == 1, "new server done transition starts a new finish")
-    check(snapshot("working", 604, seq: 2).counts?[.done] == 0, "working clears completion even with a new marker")
-    check(snapshot("idle", 605, seq: 2).rows.map(\.status) == [.idle], "cleared completion cannot resurface")
-    check(snapshot("idle", 606, seq: 3).rows.first?.status == .done, "new completion marker still creates a finish")
-    _ = snapshot("idle", 1205, seq: 3)
-    check(store.view(now: seconds(1206))[0].rows.map(\.status) == [.idle], "marker-based finish expires after 600 seconds too")
+    check(snapshot("done", 29).rows.first?.status == .done, "repeated server done stays until TTL")
+    store.expire(now: seconds(30))
+    let expired = store.view(now: seconds(30))[0]
+    check(expired.rows.map(\.status) == [.idle] && expired.counts?[.idle] == 1, "server done expires exactly at 30 seconds")
+    check(snapshot("done", 30).rows.map(\.status) == [.idle], "unchanged server done does not restart expiry")
+    check(snapshot("working", 31).rows.first?.status == .working, "working row is visible")
+    check(snapshot("idle", 32).rows.map(\.status) == [.idle], "working clears old completion")
+    check(snapshot("done", 33).counts?[.done] == 1, "new server done transition starts a new finish")
+    check(snapshot("working", 34, seq: 2).counts?[.done] == 0, "working clears completion even with a new marker")
+    check(snapshot("idle", 35, seq: 2).rows.map(\.status) == [.idle], "cleared completion cannot resurface")
+    check(snapshot("idle", 36, seq: 3).rows.first?.status == .done, "new completion marker still creates a finish")
+    _ = snapshot("idle", 65, seq: 3)
+    check(store.view(now: seconds(66))[0].rows.map(\.status) == [.idle], "marker-based finish expires after 30 seconds too")
 
     var detailed = agent("w1:p1", "working")
     detailed["cwd"] = "/repo/finance"
     detailed["terminal_title_stripped"] = "Writing tests"
-    store.succeed("local", generation: store.begin("local"), agents: parse([detailed]), now: seconds(1207))
-    let row = store.view(now: seconds(1207))[0].rows.first
+    store.succeed("local", generation: store.begin("local"), agents: parse([detailed]), now: seconds(67))
+    let row = store.view(now: seconds(67))[0].rows.first
     check(row?.place == "finance" && row?.activity == "Writing tests", "row carries place and activity")
 
     var a = agent("a", "working"), z = agent("z", "working")
