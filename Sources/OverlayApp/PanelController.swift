@@ -149,12 +149,12 @@ private final class CardBackdropView: NSVisualEffectView {
         layer.mask = mask
     }
 }
-/// The panel never becomes key, so cursor rects are ignored; a tracking area shows the hand instead.
+/// The panel never becomes key, so AppKit skips cursor rects and cursorUpdate;
+/// only enter/exit events arrive, so they switch the cursor.
 private func trackPointingHand(_ view: NSView) {
-    for area in view.trackingAreas where area.options.contains(.cursorUpdate) { view.removeTrackingArea(area) }
-    view.addTrackingArea(NSTrackingArea(rect: .zero,
-                                        options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways, .inVisibleRect],
-                                        owner: view, userInfo: nil))
+    for area in view.trackingAreas where area.userInfo?["pointingHand"] != nil { view.removeTrackingArea(area) }
+    view.addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                        owner: view, userInfo: ["pointingHand": true]))
 }
 
 /// Agent row that reacts to a click without dragging the panel or needing it to be key first.
@@ -173,28 +173,54 @@ private final class ClickableRow: NSStackView {
         if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
     }
 
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
-
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackPointingHand(self)
     }
-    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+        showHighlight(true)
+    }
     override func mouseExited(with event: NSEvent) {
         NSCursor.arrow.set()
-        super.mouseExited(with: event)
+        showHighlight(false)
+    }
+
+    /// Soft backdrop under the hovered row, slightly wider than its content; rows sit on dark cards.
+    private let highlight: CALayer = {
+        let layer = CALayer()
+        layer.cornerRadius = 6
+        layer.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        layer.opacity = 0
+        return layer
+    }()
+
+    private func showHighlight(_ visible: Bool) {
+        wantsLayer = true
+        if highlight.superlayer == nil { layer?.insertSublayer(highlight, at: 0) }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        highlight.frame = bounds.insetBy(dx: -6, dy: -2)
+        CATransaction.commit()
+        // Implicit animation fades the backdrop in and out.
+        highlight.opacity = visible ? 1 : 0
     }
 }
 
-/// Chevron toggle that shows the hand like the clickable rows.
+/// Chevron toggle that shows the hand like the clickable rows and brightens on hover.
 private final class PointerButton: NSButton {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackPointingHand(self)
     }
-    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+        contentTintColor = .labelColor
+        super.mouseEntered(with: event)
+    }
     override func mouseExited(with event: NSEvent) {
         NSCursor.arrow.set()
+        contentTintColor = .secondaryLabelColor
         super.mouseExited(with: event)
     }
 }

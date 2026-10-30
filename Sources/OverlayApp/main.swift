@@ -70,6 +70,19 @@ let sources = [SourceConfig.local(executable: herdr)]
 signal(SIGPIPE, SIG_IGN)
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+// The app is never active and WindowServer drops cursor changes from background apps;
+// this private connection property lets the hand cursor over clickable rows through.
+typealias CGSDefaultConnection = @convention(c) () -> Int32
+typealias CGSSetConnectionProperty = @convention(c) (Int32, Int32, CFString, CFTypeRef) -> Int32
+if let image = dlopen(nil, RTLD_NOW),
+   let defaultConnection = dlsym(image, "_CGSDefaultConnection"),
+   let setProperty = dlsym(image, "CGSSetConnectionProperty") {
+    let connection = unsafeBitCast(defaultConnection, to: CGSDefaultConnection.self)()
+    _ = unsafeBitCast(setProperty, to: CGSSetConnectionProperty.self)(
+        connection, connection, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
+} else {
+    print("Brak CGSSetConnectionProperty; kursor nie zmieni się nad klikalnymi elementami.")
+}
 let controller = AppController(sources: sources, stateDirectory: stateURL)
 app.delegate = controller
 stopOverlay = { controller.shutdown() }
