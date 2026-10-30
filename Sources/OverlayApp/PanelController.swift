@@ -149,6 +149,14 @@ private final class CardBackdropView: NSVisualEffectView {
         layer.mask = mask
     }
 }
+/// The panel never becomes key, so cursor rects are ignored; a tracking area shows the hand instead.
+private func trackPointingHand(_ view: NSView) {
+    for area in view.trackingAreas where area.options.contains(.cursorUpdate) { view.removeTrackingArea(area) }
+    view.addTrackingArea(NSTrackingArea(rect: .zero,
+                                        options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways, .inVisibleRect],
+                                        owner: view, userInfo: nil))
+}
+
 /// Agent row that reacts to a click without dragging the panel or needing it to be key first.
 private final class ClickableRow: NSStackView {
     var onClick: (() -> Void)?
@@ -166,6 +174,29 @@ private final class ClickableRow: NSStackView {
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackPointingHand(self)
+    }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+        super.mouseExited(with: event)
+    }
+}
+
+/// Chevron toggle that shows the hand like the clickable rows.
+private final class PointerButton: NSButton {
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackPointingHand(self)
+    }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+        super.mouseExited(with: event)
+    }
 }
 
 final class PanelController: NSObject, NSWindowDelegate {
@@ -304,6 +335,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func rebuildContent() {
+        // Removed rows and buttons never get mouseExited, so drop a hand left over from them.
+        NSCursor.arrow.set()
         let sections = rendered ?? []
         // A collapsed cloud has no scrolling content; legacy scrollers otherwise leave a clipped gutter.
         scroll.hasVerticalScroller = !(state.autoHide && compact)
@@ -538,7 +571,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func toggleButton() -> NSButton {
         let title = state.minimized ? "Expand overlay" : "Minimize overlay"
-        let button = NSButton(image: NSImage(systemSymbolName: state.minimized ? "chevron.right" : "chevron.down",
+        let button = PointerButton(image: NSImage(systemSymbolName: state.minimized ? "chevron.right" : "chevron.down",
                                             accessibilityDescription: title)!,
                               target: self, action: #selector(toggleMinimized))
         button.isBordered = false
