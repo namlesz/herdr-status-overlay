@@ -18,6 +18,9 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String, line: Int = #li
 }
 
 checkServerLifetime()
+checkCoreRPC()
+checkCoreRPCRecovery()
+checkCoreSupervisor()
 
 do {
     check(ThoughtBubble.opacity == 0.22, "thought cloud uses the approved 22 percent opacity")
@@ -37,16 +40,24 @@ do {
 }
 
 func json(_ agents: [[String: Any]], extra: [String: Any] = [:]) -> Data {
-    var root: [String: Any] = ["id": "x", "result": ["agents": agents]]
-    root.merge(extra) { a, _ in a }
-    return try! JSONSerialization.data(withJSONObject: root)
+    let terminals = agents.map { agent -> [String: Any] in
+        var terminal: [String: Any] = ["state": "live", "reported": true]
+        if let address = agent["pane_id"] { terminal["address"] = address }
+        if let state = agent["agent_status"] { terminal["status"] = ["state": state] }
+        if let cwd = agent["cwd"] { terminal["cwd"] = cwd }
+        if let title = agent["terminal_title_stripped"] { terminal["title"] = title }
+        if let turn = agent["turn"] { terminal["turn"] = turn }
+        return terminal
+    }
+    return try! JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1,
+        "result": ["terminals": terminals, "machines": [], "hidden_finished": 0]])
 }
 
 func agent(_ pane: String, _ status: String, seq: Any? = nil, terminal: String? = "t-1",
            name: Any? = nil) -> [String: Any] {
     var object: [String: Any] = ["pane_id": pane, "workspace_id": "w1", "agent_status": status,
                                  "agent": "claude", "cwd": "/private", "focused": false]
-    if let seq { object["completion_seq"] = seq }
+    if let seq { object["turn"] = seq }
     if let terminal { object["terminal_id"] = terminal }
     if let name { object["name"] = name }
     return object
@@ -61,63 +72,30 @@ func parseError(_ data: Data) -> ParseError? {
 // MARK: Parser
 
 do {
-    let records = parse([agent("w1:p1", "idle", seq: 135, name: "  Bob\u{0007}\u{2028}x  "),
-                         agent("w1:p2", "working", terminal: nil)])
-    check(records.count == 2, "parses agents and ignores unknown fields")
-    check(records[0].label == "claude", "agent kind takes priority over name")
-    check(records[0].completionSeq == 135, "reads completion_seq")
-    check(records[1].label == "claude", "falls back to agent type")
-    check(records[1].key.terminalID == nil, "terminal_id is optional")
-    check(records[0].place == "private", "place is final cwd component")
-
-    var titled = agent("w1:p5", "working", name: "  Bob\u{0007}x  ")
-    titled["agent"] = " "
-    titled["cwd"] = "/work/herdr-status-overlay/"
-    titled["terminal_title_stripped"] = "  Writing\n tests\u{0007} "
-    let detail = parse([titled])[0]
-    check(detail.label == "Bob x", "sanitized name is fallback when kind is empty")
-    check(detail.place == "herdr-status-overlay", "place is final cwd component")
-    check(detail.activity == "Writing tests", "activity is sanitized")
-    titled["cwd"] = " "
-    titled["terminal_title_stripped"] = "\n "
-    check(parse([titled])[0].place == "w1" && parse([titled])[0].activity == nil, "empty place falls back, empty activity omitted")
-    titled.removeValue(forKey: "cwd")
-    titled.removeValue(forKey: "terminal_title_stripped")
-    check(parse([titled])[0].place == "w1" && parse([titled])[0].activity == nil, "missing optional details")
-    for field in ["agent", "name", "cwd", "terminal_title_stripped"] {
-        var invalid = titled
-        invalid[field] = 7
-        check(parseError(json([invalid])) == .invalidField(field), "rejects non-string \(field)")
-    }
-    let unnamed = parse([agent("w1:p3", "idle", name: "\u{0085}\u{2029}")])
-    check(unnamed[0].label == "claude", "empty sanitized name uses fallback")
-    var bare = agent("w1:p4", "idle")
-    bare.removeValue(forKey: "agent")
-    check(parse([bare])[0].label == "w1:p4", "pane_id is the last label fallback")
-
-    let long = String(repeating: "a", count: 1023) + "é" + "b"
-    let cut = Text.label(long)
-    check(cut.utf8.count <= 1024 && cut.hasSuffix("a") && !cut.contains("é"), "label cut on character boundary")
-    check(Text.label("x\u{7f}y\u{9f}z") == "x y z", "DEL and C1 replaced")
-
-    check(parseError(json([agent("w1:p1", "sleeping")])) == .invalidField("agent_status"), "unknown status rejected")
-    check(parseError(json([["pane_id": 7, "agent_status": "idle"]])) == .invalidField("pane_id"), "pane_id type")
-    check(parseError(json([agent("w1:p1", "idle", seq: true)])) == .invalidField("completion_seq"), "bool seq rejected")
-    check(parseError(json([agent("w1:p1", "idle", seq: 1.5)])) == .invalidField("completion_seq"), "fraction seq rejected")
-    check(parseError(json([agent("w1:p1", "idle", seq: -1)])) == .invalidField("completion_seq"), "negative seq rejected")
-    check(parseError(json([agent("w1:p1", "idle", name: 3)])) == .invalidField("name"), "label type rejected")
-    check(parseError(json([agent("w1:p1", "idle"), agent("w1:p1", "busy")])) != nil, "bad entry rejects snapshot")
-    check(parseError(json([agent("w1:p1", "idle"), agent("w1:p1", "idle")])) == .duplicate, "duplicate rejected")
-    check(parseError(json([agent("w1:\u{1b}p1", "idle")])) == .invalidField("pane_id"), "control char in id rejected")
-    check(parseError(Data("{\"error\":{}}".utf8)) == .malformed, "error response rejected")
+do {
+    let raw: [String: Any] = ["jsonrpc": "2.0", "id": 1, "result": ["terminals": [
+        ["address": "machine/t7", "state": "live", "reported": true, "cwd": "/work/project", "title": "Running",
+         "status": ["state": "working", "app": "Claude"]],
+        ["address": "local/t8", "state": "live", "reported": true, "status": ["state": "future-state"]],
+        ["address": "local/t9", "state": "live", "reported": true, "status": NSNull()],
+        ["address": "local/shell", "state": "live", "reported": false, "status": NSNull()],
+        ["address": "local/t10", "state": "finished", "reported": true, "status": ["state": "done"]]
+    ], "machines": [], "hidden_finished": 1]]
+    let records = try! AgentListParser.parse(JSONSerialization.data(withJSONObject: raw))
+    check(records.count == 3 && records[0].key.paneID == "machine/t7", "aggregated live local and remote terminal records parsed")
+    check(records[0].status == .working && records[0].label == "Claude" && records[0].place == "project", "new status and detail fields mapped")
+    check(records[1].status == .unknown && records[2].status == .unknown, "future status and null reported status map safely")
+    var errorStatus: [String: Any] = ["jsonrpc": "2.0", "id": 1, "result": ["terminals": [["address": "x", "state": "live", "reported": true, "status": ["state": "error"]]]]]
+    check((try? AgentListParser.parse(JSONSerialization.data(withJSONObject: errorStatus)))?.first?.status == .blocked, "error maps to STOP status")
+    errorStatus = ["jsonrpc": "2.0", "id": 1, "result": ["terminals": [["address": "x", "state": "live", "reported": true, "status": ["state": "done"]]]]]
+    check((try? AgentListParser.parse(JSONSerialization.data(withJSONObject: errorStatus)))?.first?.status == .done, "explicit done remains done")
+    check(parseError(Data(count: AgentListParser.maxBytes + 1)) == .oversized, "oversized snapshot rejected")
     check(parseError(Data([0xff, 0xfe])) == .malformed, "invalid UTF-8 rejected")
-    check(parseError(Data(count: AgentListParser.maxBytes + 1)) == .oversized, "oversized rejected")
-    let many = (0...AgentListParser.maxAgents).map { agent("p\($0)", "idle") }
-    check(parseError(json(many)) == .tooManyAgents, "agent count bounded")
-    var nulls = agent("w1:p1", "idle")
-    nulls["completion_seq"] = NSNull()
-    nulls["name"] = NSNull()
-    check((try? AgentListParser.parse(json([nulls])))?.first?.completionSeq == nil, "null optionals accepted")
+    check(parseError(Data("{}".utf8)) == .malformed, "malformed envelope rejected")
+    let duplicate: [String: Any] = ["jsonrpc": "2.0", "id": 1, "result": ["terminals": [
+        ["address": "x", "state": "live", "reported": true], ["address": "x", "state": "live", "reported": true]]]]
+    check(parseError(try! JSONSerialization.data(withJSONObject: duplicate)) == .duplicate, "duplicate addresses fail closed")
+    check(Text.label("x\u{7f}y") == "x y", "labels sanitize control characters")
 }
 
 // MARK: Completions
@@ -125,94 +103,20 @@ do {
 do {
     var tracker = CompletionTracker()
     let key = AgentKey(paneID: "w1:p1", terminalID: "t-1")
-    func step(_ status: String, _ seq: UInt64?) {
-        tracker.apply(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) })]), now: 0)
-    }
-    func displayed(_ status: String, _ seq: UInt64?) -> DisplayStatus {
-        tracker.display(parse([agent("w1:p1", status, seq: seq.map { NSNumber(value: $0) })])[0], now: 0)
-    }
-
-    step("idle", 135)
-    check(!tracker.isPending(key, now: 0), "baseline idle is not a completion")
-    check(tracker.completionEventAt(key) == nil, "startup baseline has no celebration event")
-    step("working", nil)
-    check(!tracker.isPending(key, now: 0), "working without seq keeps marker")
-    step("idle", 135)
-    check(!tracker.isPending(key, now: 0), "same marker is not a completion")
-    step("idle", 141)
-    check(tracker.isPending(key, now: 0), "larger marker is a completion without seeing working")
-    check(displayed("idle", 141) == .done, "pending idle shows done")
-    check(displayed("working", nil) == .working, "working wins over pending done")
-    check(displayed("blocked", nil) == .blocked, "blocked wins over pending done")
-    check(displayed("done", 141) == .done, "server done with pending shows done")
-
-    step("idle", 150)
-    step("idle", 100)
-    check(!tracker.isPending(key, now: 0), "regression resets without completion")
-    step("idle", 120)
-    check(tracker.isPending(key, now: 0), "new marker after reset counts")
-
-    var fresh = CompletionTracker()
-    fresh.apply(parse([agent("w1:p1", "working")]), now: 0)
-    fresh.apply(parse([agent("w1:p1", "idle", seq: 7)]), now: 0)
-    check(fresh.isPending(key, now: 0), "observed working then first marker is a completion")
-
-    var cold = CompletionTracker()
-    cold.apply(parse([agent("w1:p1", "idle")]), now: 0)
-    cold.apply(parse([agent("w1:p1", "idle", seq: 7)]), now: 0)
-    check(!cold.isPending(key, now: 0), "first marker without observed working is not a completion")
-
-    check(cold.completionEventAt(key) == nil, "first marker without observed work has no event")
-
-    var serverTransition = CompletionTracker()
-    serverTransition.apply(parse([agent("w1:p1", "idle")]), now: 10)
-    serverTransition.apply(parse([agent("w1:p1", "done")]), now: 20)
-    check(serverTransition.completionEventAt(key) == 20, "known continuous transition to server done emits event")
-    serverTransition.rebaseline()
-    check(serverTransition.completionEventAt(key) == nil, "recovery clears celebration event")
-    serverTransition.apply(parse([agent("w1:p1", "done")]), now: 30)
-    check(serverTransition.completionEventAt(key) == nil, "recovery server done does not re-emit")
-
-
-    var doneRegression = CompletionTracker()
-    doneRegression.apply(parse([agent("w1:p1", "done", seq: 8)]), now: 10)
-    doneRegression.apply(parse([agent("w1:p1", "done", seq: 4)]), now: 20)
-    check(doneRegression.isPending(key, now: 20), "regressed sequence renews existing server-done display")
-    check(doneRegression.completionEventAt(key) == nil, "sequence regression does not celebrate")
-    check(!doneRegression.isPending(key, now: 20 + SourceConfig.finishedTTL),
-          "regressed server-done display expires from its renewed timestamp")
-
-    var earlyMarker = CompletionTracker()
-    earlyMarker.apply(parse([agent("w1:p1", "idle")]), now: 0)
-    earlyMarker.apply(parse([agent("w1:p1", "working", seq: 7)]), now: 0)
-    earlyMarker.apply(parse([agent("w1:p1", "idle", seq: 7)]), now: 0)
-    check(!earlyMarker.isPending(key, now: 0), "first marker on the first working snapshot is only a baseline")
-
-    var identity = CompletionTracker()
-    identity.apply(parse([agent("w1:p1", "idle", seq: 5)]), now: 0)
-    identity.apply(parse([agent("w1:p1", "idle", seq: 9, terminal: "t-2")]), now: 0)
-    check(!identity.isPending(AgentKey(paneID: "w1:p1", terminalID: "t-2"), now: 0), "new terminal is a new baseline")
-
-    var removal = CompletionTracker()
-    removal.apply(parse([agent("w1:p1", "idle", seq: 5)]), now: 0)
-    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]), now: 0)
-    removal.apply(parse([]), now: 0)
-    removal.apply(parse([agent("w1:p1", "idle", seq: 6)]), now: 0)
-    check(!removal.isPending(key, now: 0), "removed agent drops pending and re-baselines")
-
-    var recovery = CompletionTracker()
-    recovery.apply(parse([agent("w1:p1", "idle", seq: 5), agent("w1:p2", "idle", seq: 1)]), now: 0)
-    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 1)]), now: 0)
-    recovery.rebaseline()
-    recovery.apply(parse([agent("w1:p1", "idle", seq: 6), agent("w1:p2", "idle", seq: 9)]), now: 0)
-    check(recovery.isPending(key, now: 0), "recovery keeps unexpired completion")
-    check(!recovery.isPending(AgentKey(paneID: "w1:p2", terminalID: "t-1"), now: 0), "recovery never invents completion")
-
-    var sticky = CompletionTracker()
-    sticky.apply(parse([agent("w1:p1", "idle", seq: 1)]), now: 0)
-    for seq in 2...5 { sticky.apply(parse([agent("w1:p1", "idle", seq: NSNumber(value: seq))]), now: 0) }
-    check(sticky.isPending(key, now: 0), "one pending record per agent, not history")
-
+    tracker.apply(parse([agent("w1:p1", "working", seq: 1)]), now: 0)
+    tracker.apply(parse([agent("w1:p1", "done", seq: 900)]), now: 10)
+    check(tracker.isPending(key, now: 10) && tracker.completionEventAt(key) == 10, "continuous transition to explicit done is celebrated")
+    tracker.rebaseline()
+    check(tracker.completionEventAt(key) == nil, "recovery clears completion event")
+    tracker.apply(parse([agent("w1:p1", "done", seq: 901)]), now: 20)
+    check(tracker.completionEventAt(key) == nil, "recovered done does not re-emit celebration")
+    tracker.apply(parse([agent("w1:p1", "working", seq: 902)]), now: 21)
+    check(!tracker.isPending(key, now: 21), "working clears done state regardless of turn marker")
+    tracker.apply(parse([agent("w1:p1", "idle", seq: 9999)]), now: 22)
+    check(!tracker.isPending(key, now: 22), "turn growth never infers completion")
+    tracker.apply(parse([agent("w1:p1", "done")]), now: 23)
+    check(tracker.isPending(key, now: 23), "explicit done displays after a fresh transition")
+    check(!tracker.isPending(key, now: 23 + SourceConfig.finishedTTL), "done expires at 30 seconds")
 
     var moodStore = Store(sources: [.local(executable: "/fake")])
     func moodSnapshot(_ agents: [[String: Any]], at time: Double) -> [SectionView] {
@@ -227,8 +131,8 @@ do {
     check(MascotMood.select(in: moodViews, now: seconds(2)) == .sleeping, "fresh idle selects sleeping mascot")
     moodViews = moodSnapshot([agent("w1:p1", "idle", seq: 2), agent("w1:p2", "blocked")], at: 3)
     check(MascotMood.select(in: moodViews, now: seconds(3)) == .blocked, "blocked takes priority over celebration")
-    moodViews = moodSnapshot([agent("w1:p1", "idle", seq: 2)], at: 4)
-    check(MascotMood.select(in: moodViews, now: seconds(4)) == .celebrating, "completion marker selects celebration")
+    moodViews = moodSnapshot([agent("w1:p1", "done")], at: 4)
+    check(MascotMood.select(in: moodViews, now: seconds(4)) == .celebrating, "fresh done transition selects celebration")
     check(MascotMood.select(in: moodViews, now: seconds(7)) == .sleeping, "celebration expires after three seconds")
     moodViews = moodSnapshot([agent("w1:p1", "working"), agent("w1:p2", "working")], at: 8)
     check(MascotMood.select(in: moodViews, now: seconds(8)) == .pairWorking, "two fresh working agents select pair scenes")
@@ -412,6 +316,7 @@ do {
               "\(frame.resourceName).png has a transparent perimeter")
     }
 }
+}
 
 // MARK: Panel preferences and compact counters
 
@@ -469,7 +374,7 @@ do {
     check(!hover.update(inside: false, now: 10), "remaining outside does not rebuild")
     check(hover.update(inside: true, now: 11), "collapsed panel can expand again")
 
-    var store = Store(sources: [.local(executable: "/fake"), .machine("box", executable: "/fake")])
+    var store = Store(sources: [.local(executable: "/fake"), SourceConfig(id: "machine:box", label: "box", command: ["/fake"], interval: 5, staleAfter: seconds(20))])
     check(SectionView.activeCounts(in: []) == nil, "empty compact snapshot has no data")
     check(SectionView.activeCounts(in: store.view(now: 0)) == nil, "waiting compact snapshot is not zero agents")
     store.succeed("local", generation: 0,
@@ -499,7 +404,7 @@ do {
 
 do {
     let local = SourceConfig.local(executable: "/fake/herdr")
-    let remote = SourceConfig.machine("box", executable: "/fake/herdr")
+    let remote = SourceConfig(id: "machine:box", label: "box", command: ["/fake/herdr"], interval: 5, staleAfter: seconds(20))
     var store = Store(sources: [local, remote])
     func displayed(_ now: UInt64) -> [String] {
         store.view(now: now).filter(\.shouldDisplay).map(\.id)
@@ -561,7 +466,7 @@ do {
     g = waking.begin("local")
     waking.succeed("local", generation: g, agents: parse([agent("w1:p1", "idle", seq: 3)]), now: t0 + seconds(3))
     let rows = waking.view(now: t0 + seconds(3))[0].rows
-    check(rows.count == 1 && rows[0].status == .done, "completion after baseline listed")
+    check(rows.count == 1 && rows[0].status == .idle, "turn growth after baseline is not completion")
 
     var sorting = Store(sources: [local])
     g = sorting.begin("local")
@@ -592,7 +497,7 @@ do {
     check(snapshot("done", 33).counts?[.done] == 1, "new server done transition starts a new finish")
     check(snapshot("working", 34, seq: 2).counts?[.done] == 0, "working clears completion even with a new marker")
     check(snapshot("idle", 35, seq: 2).rows.map(\.status) == [.idle], "cleared completion cannot resurface")
-    check(snapshot("idle", 36, seq: 3).rows.first?.status == .done, "new completion marker still creates a finish")
+    check(snapshot("idle", 36, seq: 3).rows.first?.status == .idle, "turn growth never creates a finish")
     _ = snapshot("idle", 65, seq: 3)
     check(store.view(now: seconds(66))[0].rows.map(\.status) == [.idle], "marker-based finish expires after 30 seconds too")
 
@@ -706,29 +611,42 @@ do {
     check(mailbox.replace(initial) && mailbox.take() == initial, "UI delivery can be scheduled again after take")
 }
 
+do {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("overlay state \(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: home) }
+    let legacy = home.appendingPathComponent(".local/state/herdr/plugins/local.status-overlay/panel.json")
+    try FileManager.default.createDirectory(at: legacy.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let original = Data("private-panel-settings".utf8)
+    try original.write(to: legacy)
+    let resolved = try OverlayStateDirectory.resolve(home: home.path, xdgStateHome: nil)
+    let copied = resolved.appendingPathComponent("panel.json")
+    check(resolved.lastPathComponent == "HerdrStatusOverlay" && (try? Data(contentsOf: copied)) == original,
+          "copies old panel preferences into standalone state")
+    check((try? Data(contentsOf: legacy)) == original, "legacy panel preferences remain unchanged")
+    let xdg = home.appendingPathComponent("xdg")
+    let resolvedXDG = try OverlayStateDirectory.resolve(home: home.path, xdgStateHome: xdg.path)
+    check(resolvedXDG.path == xdg.appendingPathComponent("herdr-status-overlay").path, "respects XDG state home")
+    let custom = home.appendingPathComponent("custom")
+    let resolvedCustom = try OverlayStateDirectory.resolve(home: home.path, xdgStateHome: nil, override: custom.path)
+    check(resolvedCustom.path == custom.path && (try? Data(contentsOf: custom.appendingPathComponent("panel.json"))) == original,
+          "explicit state directory also migrates legacy preferences")
+    let blocked = home.appendingPathComponent("not-a-directory")
+    try Data().write(to: blocked)
+    var rejectedMigration = false
+    do { _ = try OverlayStateDirectory.resolve(home: home.path, xdgStateHome: nil, override: blocked.path) }
+    catch { rejectedMigration = true }
+    check(rejectedMigration && (try? Data(contentsOf: legacy)) == original,
+          "failed migration never falls back to writable legacy settings")
+}
+
 // MARK: Config
 
 do {
-    let parsed = MachineList.parse("# comment\n\nbox\n  box  \n-oProxyCommand=x\nwith space\nok.host_1\n")
-    check(parsed.aliases == ["box", "ok.host_1"], "aliases parsed and deduplicated")
-    check(parsed.rejectedLines == [5, 6], "unsafe aliases rejected")
-    let crlf = MachineList.parse("# comment\r\n\r\nbox\r\n  box  \r\n-oProxyCommand=x\r\nwith space\r\nok.host_1\r\n")
-    check(crlf == parsed, "CRLF preserves aliases and rejected line numbers")
-    check(MachineList.parse("").aliases.isEmpty, "empty list allowed")
-    let limited = MachineList.parse((0..<17).map { "m\($0)" }.joined(separator: "\n"))
-    check(limited.aliases == (0..<16).map { "m\($0)" } && limited.rejectedLines == [17],
-          "machine list keeps the first 16 aliases and reports overflow")
-    let missing = try? MachineList.load(directory: URL(fileURLWithPath: "/nonexistent-\(getpid())"))
-    check(missing == MachineList.Parsed(), "missing file means local only")
-    let source = SourceConfig.machine("box", executable: "/x/herdr")
-    check(source.listArguments == ["/x/herdr", "--machine", "box", "agent", "list"], "remote argv without shell")
-    check(SourceConfig.local(executable: "/x/herdr").listArguments == ["/x/herdr", "agent", "list"], "local argv")
-    check(source.focusArguments(paneID: "p1") == ["/x/herdr", "--machine", "box", "agent", "focus", "p1"],
-          "remote focus argv")
-    check(SourceConfig.local(executable: "/x/herdr").focusArguments(paneID: "p1")
-          == ["/x/herdr", "agent", "focus", "p1"], "local focus argv")
-    check(source.focusArguments(paneID: "--help") == nil, "option-like pane id rejected")
-    check(source.focusArguments(paneID: "") == nil, "empty pane id rejected")
+    let source = SourceConfig.local(executable: "/x/herdr")
+    check(Array(source.focusArguments(paneID: "machine/t7")?.suffix(4) ?? []) == ["do", "agent.focus", "--terminal", "machine/t7"],
+          "focus passes the stable aggregated terminal address without a shell")
+    check(source.focusArguments(paneID: "--help") == nil, "option-like address rejected")
+    check(source.focusArguments(paneID: "") == nil, "empty address rejected")
 }
 
 // MARK: Process runner (fake children)

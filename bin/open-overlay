@@ -1,5 +1,15 @@
 #!/bin/sh
-# Herdr 0.9.5 spawns startup/action commands directly; capture its PID before detaching.
+# Manual start: return immediately; the helper only connects to an already-running core.
 set -eu
-export HERDR_OVERLAY_SERVER_PID="$PPID"
-exec "$HERDR_PLUGIN_ROOT/bin/run-helper"
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+helper="$root/.build/release/HerdrStatusOverlay"
+if [ ! -x "$helper" ]; then
+    echo "Build the overlay first: swift build -c release" >&2
+    exit 1
+fi
+home=${HOME:?HOME is required}
+state=${HERDR_OVERLAY_STATE_DIR:-${XDG_STATE_HOME:+$XDG_STATE_HOME/herdr-status-overlay}}
+: "${state:=$home/Library/Application Support/HerdrStatusOverlay}"
+umask 077
+mkdir -p "$state"
+nohup "$helper" </dev/null >>"$state/overlay.log" 2>&1 &

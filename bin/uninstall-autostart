@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+home=${HOME:?HOME is required}
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+helper="$root/.build/release/HerdrStatusOverlay"
+uid=$(id -u)
+plist="$home/Library/LaunchAgents/dev.herdr.status-overlay.plist"
+[ -f "$plist" ] || { echo "No Herdr Status Overlay LaunchAgent found."; exit 0; }
+python3 - "$plist" "$helper" "$root" <<'PY'
+import plistlib, sys
+path, helper, root = sys.argv[1:]
+with open(path, "rb") as f: job = plistlib.load(f)
+if (job.get("Label") != "dev.herdr.status-overlay" or
+        job.get("ProgramArguments") != [helper, "--watch-core"] or job.get("WorkingDirectory") != root):
+    raise SystemExit("Refusing to remove an unrelated LaunchAgent")
+PY
+if launchctl print "gui/$uid/dev.herdr.status-overlay" >/dev/null 2>&1; then
+    launchctl bootout "gui/$uid" "$plist"
+fi
+rm "$plist"
+echo "Removed Herdr Status Overlay LaunchAgent."

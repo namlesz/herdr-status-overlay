@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+umask 077
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+helper="$root/.build/release/HerdrStatusOverlay"
+[ -x "$helper" ] || { echo "Build first: swift build -c release" >&2; exit 1; }
+home=${HOME:?HOME is required}
+uid=$(id -u)
+state=${HERDR_OVERLAY_STATE_DIR:-${XDG_STATE_HOME:+$XDG_STATE_HOME/herdr-status-overlay}}
+: "${state:=$home/Library/Application Support/HerdrStatusOverlay}"
+agent="$home/Library/LaunchAgents"
+plist="$agent/dev.herdr.status-overlay.plist"
+[ ! -e "$plist" ] && [ ! -L "$plist" ] || { echo "Refusing to overwrite existing LaunchAgent: $plist" >&2; exit 1; }
+mkdir -p "$agent" "$state"
+python3 - "$plist" "$helper" "$root" "$state" <<'PY'
+import os, plistlib, sys
+path, helper, root, state = sys.argv[1:]
+job = {
+    "Label": "dev.herdr.status-overlay",
+    "ProgramArguments": [helper, "--watch-core"],
+    "WorkingDirectory": root,
+    "RunAtLoad": True,
+    "KeepAlive": True,
+    "StandardOutPath": state + "/supervisor.log",
+    "StandardErrorPath": state + "/supervisor.log",
+    "EnvironmentVariables": {key: os.environ[key] for key in (
+        "HOME", "PATH", "XDG_STATE_HOME", "HC_SESSION", "HERDR_OVERLAY_SOCKET_PATH",
+        "HERDR_APP_HOME", "HERDR_APP_BIN_PATH", "HERDR_OVERLAY_STATE_DIR"
+    ) if key in os.environ},
+}
+with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as f:
+    plistlib.dump(job, f, fmt=plistlib.FMT_XML, sort_keys=True)
+PY
+chmod 600 "$plist"
+launchctl bootstrap "gui/$uid" "$plist"
+echo "Installed optional Herdr Status Overlay login supervisor."

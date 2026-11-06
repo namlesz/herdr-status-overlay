@@ -2,8 +2,8 @@ import AppKit
 import OverlayCore
 
 final class AppController: NSObject, NSApplicationDelegate {
-    private static let terminalBundleID = "com.mitchellh.ghostty"
 
+    private static let terminalBundleID = "dev.herdr.app"
     private let sources: [SourceConfig]
     private let model: OverlayModel
     private let pollers: [SourcePoller]
@@ -24,11 +24,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         return ProcessRunner(limits: limits)
     }()
 
-    init(sources: [SourceConfig], stateDirectory: URL) {
+    init(sources: [SourceConfig], stateDirectory: URL, read: @escaping ([String]) -> RunOutcome, cancelRead: @escaping () -> Void) {
         self.sources = sources
         let model = OverlayModel(sources: sources)
         self.model = model
-        pollers = sources.map { SourcePoller(source: $0, model: model) }
+        pollers = sources.map { SourcePoller(source: $0, model: model, read: read, cancel: cancelRead) }
         panel = PanelController(stateFile: stateDirectory.appendingPathComponent("panel.json"))
         super.init()
     }
@@ -67,8 +67,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
-    /// Brings the terminal forward at once (switching Spaces if needed) and selects the agent's pane in Herdr.
-    /// Which Ghostty window comes forward is up to macOS; the overlay cannot map clients to windows.
+    /// Activates the Herdr GUI and selects the stable terminal address through its focus command.
     private func open(_ row: RowView) {
         guard let source = sources.first(where: { $0.id == row.sourceID }),
               let arguments = source.focusArguments(paneID: row.key.paneID) else { return NSSound.beep() }

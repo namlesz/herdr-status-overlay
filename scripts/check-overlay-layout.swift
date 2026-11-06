@@ -52,8 +52,8 @@ struct OverlayLayoutCheck {
             for style in [NSScroller.Style.legacy, .overlay] {
                 scroll.scrollerStyle = style
                 for count in [1, 20, 1] {
-                    let agents = (0..<count).map { ["pane_id": "p\($0)", "agent_status": "done"] }
-                    let data = try JSONSerialization.data(withJSONObject: ["result": ["agents": agents]])
+                    let agents = (0..<count).map { ["address": "p\($0)", "state": "live", "reported": true, "status": ["state": "done"]] as [String: Any] }
+                    let data = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "result": ["terminals": agents, "machines": [], "hidden_finished": 0]])
                     store.succeed("local", generation: store.begin("local"),
                                   agents: try AgentListParser.parse(data), now: seconds(1))
                     controller.render(store.view(now: seconds(1)))
@@ -87,8 +87,8 @@ struct OverlayLayoutCheck {
         controller.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
         var widths: [CGFloat] = []
         for statuses in [["working"], ["working", "blocked"], ["working", "blocked", "done"], ["working"]] {
-            let agents = statuses.enumerated().map { ["pane_id": "s\($0.offset)", "agent_status": $0.element] }
-            let data = try JSONSerialization.data(withJSONObject: ["result": ["agents": agents]])
+            let agents = statuses.enumerated().map { ["address": "s\($0.offset)", "state": "live", "reported": true, "status": ["state": $0.element]] as [String: Any] }
+            let data = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "result": ["terminals": agents, "machines": [], "hidden_finished": 0]])
             store.succeed("local", generation: store.begin("local"),
                           agents: try AgentListParser.parse(data), now: seconds(1))
             let before = dogFrame()
@@ -144,7 +144,7 @@ struct OverlayLayoutCheck {
             let before = dogFrame()
             for status in ["idle", "working", "idle"] {
                 let data = try JSONSerialization.data(withJSONObject: [
-                    "result": ["agents": [["pane_id": "quiet", "agent_status": status]]]
+                    "jsonrpc": "2.0", "id": 1, "result": ["terminals": [["address": "quiet", "state": "live", "reported": true, "status": ["state": status]]], "machines": [], "hidden_finished": 0]
                 ])
                 store.succeed("local", generation: store.begin("local"),
                               agents: try AgentListParser.parse(data), now: seconds(1))
@@ -161,14 +161,14 @@ struct OverlayLayoutCheck {
         // Row-only changes must keep compact views alive, but still reach the expanded list and mascot.
         let now = MonotonicClock.now()
         var compactStore = Store(sources: [.local(executable: "/fake")])
-        func renderCompact(title: String, sequence: Int) throws {
-            let data = try JSONSerialization.data(withJSONObject: ["result": ["agents": [
-                ["pane_id": "busy", "agent_status": "working", "terminal_title_stripped": title],
-                ["pane_id": "finished", "agent_status": "done", "completion_seq": sequence]
-            ]]])
+        func renderCompact(title: String, status: String = "done", publish: Bool = true) throws {
+            let data = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "result": ["terminals": [
+                ["address": "busy", "state": "live", "reported": true, "status": ["state": "working"], "title": title],
+                ["address": "finished", "state": "live", "reported": true, "status": ["state": status]]
+            ], "machines": [], "hidden_finished": 0]])
             compactStore.succeed("local", generation: compactStore.begin("local"),
                                  agents: try AgentListParser.parse(data), now: now)
-            controller.render(compactStore.view(now: now))
+            if publish { controller.render(compactStore.view(now: now)) }
         }
         func containsText(_ text: String, in view: NSView) -> Bool {
             (view as? NSTextField)?.stringValue == text || view.subviews.contains { containsText(text, in: $0) }
@@ -182,11 +182,12 @@ struct OverlayLayoutCheck {
             let stack = scroll.documentView?.subviews.compactMap { $0 as? NSStackView }.first
             return stack?.arrangedSubviews.first?.frame.width
         }
-        try renderCompact(title: "Before", sequence: 1)
+        try renderCompact(title: "Before")
         let unchangedCloud = cloud(in: root)!
-        try renderCompact(title: "Latest activity", sequence: 1)
+        try renderCompact(title: "Latest activity")
         require(cloud(in: root) === unchangedCloud, "title-only changes must not rebuild the cloud")
-        try renderCompact(title: "Latest activity", sequence: 2)
+        try renderCompact(title: "Latest activity", status: "working", publish: false)
+        try renderCompact(title: "Latest activity")
         require(cloud(in: root) === unchangedCloud, "new completion with equal counters keeps the cloud")
         let mood = Mirror(reflecting: controller).children.first { $0.label == "mood" }!.value as! MascotMood?
         require(mood == .celebrating, "equal counters must still deliver new completion events to the mascot")
@@ -194,7 +195,7 @@ struct OverlayLayoutCheck {
         require(containsText("Latest activity", in: root), "expansion must show the latest cached row data")
         controller.perform(NSSelectorFromString("toggleMinimized"))
         let compactCard = scroll.documentView!.subviews[0].subviews[0]
-        try renderCompact(title: "Manual latest activity", sequence: 2)
+        try renderCompact(title: "Manual latest activity")
         require(scroll.documentView!.subviews[0].subviews[0] === compactCard,
                 "manual compact mode also preserves its content for row-only changes")
         controller.perform(NSSelectorFromString("toggleMinimized"))

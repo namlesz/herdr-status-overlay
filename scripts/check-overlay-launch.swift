@@ -1,66 +1,34 @@
 import Darwin
 import Foundation
 
-// Test the real launch scripts with a fake helper, without Herdr or GUI.
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 let manager = FileManager.default
+let binary = temporary.appendingPathComponent(".build/release/HerdrStatusOverlay")
+try manager.createDirectory(at: binary.deletingLastPathComponent(), withIntermediateDirectories: true)
 try manager.createDirectory(at: temporary.appendingPathComponent("bin"), withIntermediateDirectories: true)
-try manager.createDirectory(at: temporary.appendingPathComponent(".build/release"), withIntermediateDirectories: true)
+try manager.copyItem(at: root.appendingPathComponent("bin/open-overlay"), to: temporary.appendingPathComponent("bin/open-overlay"))
 defer { try? manager.removeItem(at: temporary) }
-try manager.copyItem(at: root.appendingPathComponent("bin/run-helper"),
-                     to: temporary.appendingPathComponent("bin/run-helper"))
-let helper = temporary.appendingPathComponent(".build/release/HerdrStatusOverlay")
-try """
-#!/bin/sh
-printf '%s\\n' "$HERDR_OVERLAY_SERVER_PID" > "$HERDR_PLUGIN_STATE_DIR/started"
-sleep 1
-printf 'finished\\n'
-""".write(to: helper, atomically: true, encoding: .utf8)
-try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
-
-for event in ["startup", "action"] {
-    let state = temporary.appendingPathComponent(event)
-    let process = Process()
-    process.executableURL = root.appendingPathComponent("bin/open-overlay")
-    var environment = ProcessInfo.processInfo.environment
-    environment["HERDR_PLUGIN_ROOT"] = temporary.path
-    environment["HERDR_PLUGIN_STATE_DIR"] = state.path
-    environment["HERDR_PLUGIN_EVENT"] = event
-    // No Herdr command is needed or allowed by this fixture.
-    environment["HERDR_BIN_PATH"] = "/does-not-exist"
-    process.environment = environment
-    let output = Pipe()
-    process.standardOutput = output
-    process.standardError = output
-    let start = Date()
-    try process.run()
-    process.waitUntilExit()
-    let captured = output.fileHandleForReading.readDataToEndOfFile()
-    precondition(process.terminationStatus == 0, "launcher failed")
-    precondition(captured.isEmpty && Date().timeIntervalSince(start) < 0.8,
-                 "launcher must return immediately and release Herdr's output pipes")
-    let deadline = Date().addingTimeInterval(3)
-    let log = state.appendingPathComponent("helper.log")
-    while Date() < deadline {
-        if (try? String(contentsOf: log, encoding: .utf8))?.contains("finished") == true { break }
-        Thread.sleep(forTimeInterval: 0.01)
-    }
-    let parent = try String(contentsOf: state.appendingPathComponent("started"), encoding: .utf8)
-    let messages = try String(contentsOf: log, encoding: .utf8)
-    precondition(parent.trimmingCharacters(in: .whitespacesAndNewlines) == String(getpid()),
-                 "captures server parent PID")
-    precondition(messages.contains("finished"), "helper finishes in background")
-    let permissions = try manager.attributesOfItem(atPath: log.path)[.posixPermissions] as! Int
-    precondition(permissions & 0o077 == 0, "helper log is private")
+try "#!/bin/sh\nprintf 'started\\n'\nsleep 1\nprintf 'finished\\n'\n".write(to: binary, atomically: true, encoding: .utf8)
+try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
+let state = temporary.appendingPathComponent("state")
+let process = Process()
+process.executableURL = temporary.appendingPathComponent("bin/open-overlay")
+process.environment = ["HOME": temporary.path, "HERDR_OVERLAY_STATE_DIR": state.path, "PATH": "/usr/bin:/bin"]
+let output = Pipe(); process.standardOutput = output; process.standardError = output
+let start = Date()
+try process.run(); process.waitUntilExit()
+let result = output.fileHandleForReading.readDataToEndOfFile()
+precondition(process.terminationStatus == 0 && result.isEmpty && Date().timeIntervalSince(start) < 0.8,
+             "manual launcher returns without waiting for helper")
+let log = state.appendingPathComponent("overlay.log")
+let deadline = Date().addingTimeInterval(3)
+while Date() < deadline {
+    if (try? String(contentsOf: log, encoding: .utf8))?.contains("finished") == true { break }
+    Thread.sleep(forTimeInterval: 0.02)
 }
-
-try manager.removeItem(at: helper)
-let missing = Process()
-missing.executableURL = root.appendingPathComponent("bin/open-overlay")
-missing.environment = ["HERDR_PLUGIN_ROOT": temporary.path, "HERDR_PLUGIN_STATE_DIR": temporary.path]
-missing.standardError = FileHandle.nullDevice
-try missing.run()
-missing.waitUntilExit()
-precondition(missing.terminationStatus == 1, "missing build is reported by the action")
-print("Background launch checks passed (startup, action, parent PID, stdio, log permissions, missing build).")
+let contents = try String(contentsOf: log, encoding: .utf8)
+precondition(contents.contains("started") && contents.contains("finished"), "helper output is captured in state log")
+let permissions = try manager.attributesOfItem(atPath: log.path)[.posixPermissions] as! Int
+precondition(permissions & 0o077 == 0, "state log is private")
+print("Manual launch script checks passed (background, immediate return, private log).")
