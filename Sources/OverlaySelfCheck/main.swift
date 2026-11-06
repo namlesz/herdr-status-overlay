@@ -18,8 +18,10 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String, line: Int = #li
 }
 
 checkServerLifetime()
-checkCoreRPC()
 checkCoreRPCRecovery()
+checkCoreEvents()
+checkCoreEventRPC()
+checkCoreEventSource()
 checkCoreSupervisor()
 
 do {
@@ -394,7 +396,7 @@ do {
     store.succeed("local", generation: 0, agents: parse([agent("l1", "working")]), now: 0)
     check(SectionView.activeCounts(in: store.view(now: 0)) == [.working: 1],
           "compact keeps only the remaining nonzero status")
-    check(SectionView.activeCounts(in: store.view(now: seconds(7))) == nil, "compact excludes stale local too")
+    check(SectionView.activeCounts(in: store.view(now: seconds(46))) == nil, "compact excludes stale local after the heartbeat window")
     store.succeed("local", generation: 0, agents: parse([agent("l4", "idle")]), now: seconds(8))
     check(SectionView.activeCounts(in: store.view(now: seconds(8))) == [:], "fresh idle-only snapshot has no active agents")
     store.wake()
@@ -441,8 +443,8 @@ do {
     store.succeed("local", generation: g, agents: snapshot(["address": "w1:p2", "state": "live", "reported": true, "status": ["state": "working"]]), now: t0 + seconds(5))
     check(section("local", t0 + seconds(5)).rows.count == 1, "agent returns when status is reported again")
 
-    view = section("local", t0 + seconds(12))
-    check(view.stale && view.counts == nil && view.rows.count == 1 && view.problem == .outdated, "local stale after 6 s")
+    view = section("local", t0 + seconds(51))
+    check(view.stale && view.counts == nil && view.rows.count == 1 && view.problem == .outdated, "local stale after 45 s without heartbeat")
 
     g = store.begin("machine:box")
     store.succeed("machine:box", generation: g, agents: parse([agent("w9:p1", "idle", seq: 1)]), now: t0)

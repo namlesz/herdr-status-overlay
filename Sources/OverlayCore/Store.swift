@@ -71,15 +71,27 @@ public struct Store {
 
     /// Full replacement of the source snapshot; returns false when the read was invalidated.
     @discardableResult
-    public mutating func succeed(_ id: String, generation: UInt64, agents: [AgentRecord], now: UInt64) -> Bool {
+    public mutating func succeed(_ id: String, generation: UInt64, agents: [AgentRecord], now: UInt64,
+                                 refresh: Bool = true) -> Bool {
         guard let index = index(id), sources[index].generation == generation else { return false }
-        if isStale(sources[index], now: now) { sources[index].tracker.rebaseline() }
+        let stale = isStale(sources[index], now: now)
+        // Availability filtering is not evidence that the event stream is alive.
+        guard refresh || !stale else { return false }
+        if stale { sources[index].tracker.rebaseline() }
         sources[index].agents = agents
-        sources[index].lastSuccess = now
-        sources[index].invalidation = nil
+        if refresh {
+            sources[index].lastSuccess = now
+            sources[index].invalidation = nil
+        }
         sources[index].tracker.apply(agents, now: now)
         return true
     }
+    public mutating func heartbeat(_ id: String, now: UInt64) {
+        guard let index = index(id), sources[index].invalidation == nil, sources[index].lastSuccess != nil,
+              !isStale(sources[index], now: now) else { return }
+        sources[index].lastSuccess = now
+    }
+
 
     public mutating func fail(_ id: String, generation: UInt64, failure: ReadFailure) {
         guard let index = index(id), sources[index].generation == generation else { return }
@@ -87,6 +99,10 @@ public struct Store {
         sources[index].tracker.rebaseline()
     }
 
+    public mutating func rebaseline(_ id: String) {
+        guard let index = index(id) else { return }
+        sources[index].tracker.rebaseline()
+    }
     /// Everything read before sleep is outdated, including reads still in flight.
     public mutating func wake() {
         for index in sources.indices {

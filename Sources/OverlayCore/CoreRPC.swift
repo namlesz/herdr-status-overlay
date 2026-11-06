@@ -5,6 +5,8 @@ public enum CoreRPCError: Error { case unavailable, malformed, timeout, oversize
 
 /// Read-only line-delimited JSON-RPC client pinned to the first same-user core PID.
 public final class CoreRPCClient {
+    /// Event snapshots and notifications carry retained finished history (hc keeps at most 500 per core), so they get a larger, still bounded limit.
+    public static let eventStreamMaxBytes = 16 << 20
     public let socketPath: String
     public let pid: pid_t
     private let stateLock = NSLock()
@@ -14,6 +16,7 @@ public final class CoreRPCClient {
     private var requestID = 1
     private var deadline: UInt64 = 0
     private let deadlineSeconds: Double = 2
+    private var readBuffer = Data()
 
     public init?(environment: [String: String] = ProcessInfo.processInfo.environment) {
         let path: String?
@@ -34,43 +37,92 @@ public final class CoreRPCClient {
     deinit { closeTransport() }
 
     public func cancel() {
-        stateLock.lock(); cancelled = true; let current = fd; stateLock.unlock()
-        if current >= 0 { shutdown(current, SHUT_RDWR) }
+        stateLock.lock(); defer { stateLock.unlock() }
+        cancelled = true
+        if fd >= 0 { shutdown(fd, SHUT_RDWR) }
+    }
+
+    public func interrupt() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        if fd >= 0 { shutdown(fd, SHUT_RDWR) }
+    }
+
+    public func reconnect() {
+        closeTransport()
+        handshaken = false
+        requestID = 1
     }
 
     public func snapshot() throws -> Data {
+        do {
+            try prepareConnection()
+            return try JSONSerialization.data(withJSONObject: call(method: "terminal.list", params: [:]))
+        } catch {
+            reconnect()
+            throw error
+        }
+    }
+
+    public func subscribeEvents() throws -> CoreEventReducer {
+        try prepareConnection()
+        let response = try call(method: "events.subscribe", params: [:], maxBytes: Self.eventStreamMaxBytes)
+        guard let result = response["result"] as? [String: Any] else { throw CoreRPCError.malformed }
+        return try CoreEventReducer(snapshot: result)
+    }
+
+    public func nextNotification(timeout: Double = 1) throws -> [String: Any]? {
+        guard !isCancelled, currentFD >= 0 else { throw CoreRPCError.unavailable }
+        deadline = MonotonicClock.now() + seconds(timeout)
+        do {
+            let line = try readLine(maxBytes: Self.eventStreamMaxBytes)
+            guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any] else { throw CoreRPCError.malformed }
+            return object
+        } catch CoreRPCError.timeout { return nil }
+        catch { closeTransport(); throw error }
+    }
+
+    public func machineList() throws -> MachineAvailability {
+        do {
+            try prepareConnection()
+            let response = try call(method: "machine.list", params: [:])
+            guard let result = response["result"] as? [String: Any], let machines = result["machines"] as? [[String: Any]] else { throw CoreRPCError.malformed }
+            var known = Set<String>(), connected = Set<String>()
+            for machine in machines {
+                guard let name = machine["name"] as? String, Text.isIdentifier(name), !name.contains("/"),
+                      known.insert(name).inserted, let state = machine["state"] as? String else { throw CoreRPCError.malformed }
+                if state == "connected" { connected.insert(name) }
+            }
+            return MachineAvailability(known: known, connected: connected)
+        } catch {
+            reconnect()
+            throw error
+        }
+    }
+
+    /// Hello and the PID check run once per connection: the kernel pins the peer PID for that socket.
+    private func prepareConnection() throws {
         guard !isCancelled else { throw CoreRPCError.unavailable }
         if currentFD < 0 { resetAndReconnect() }
         guard currentFD >= 0 else { throw CoreRPCError.unavailable }
         deadline = MonotonicClock.now() + seconds(deadlineSeconds)
-        do {
-            if !handshaken {
-                let hello = try call(method: "hello", params: ["generation": 1, "framed": false])
-                guard let result = hello["result"] as? [String: Any], result["generation"] as? Int == 1 else {
-                    throw CoreRPCError.malformed
-                }
-                handshaken = true
-            }
+        if !handshaken {
+            let hello = try call(method: "hello", params: ["generation": 1, "framed": false])
+            guard let result = hello["result"] as? [String: Any], result["generation"] as? Int == 1 else { throw CoreRPCError.malformed }
             let status = try call(method: "server.status", params: [:])
-            guard let server = status["result"] as? [String: Any], Self.matchesPID(server["pid"], pid) else {
-                throw CoreRPCError.identityChanged
-            }
-            return try JSONSerialization.data(withJSONObject: call(method: "terminal.list", params: [:]))
-        } catch {
-            closeTransport()
-            throw error
+            guard let server = status["result"] as? [String: Any], Self.matchesPID(server["pid"], pid) else { throw CoreRPCError.identityChanged }
+            handshaken = true
         }
     }
 
     private var currentFD: Int32 { stateLock.lock(); defer { stateLock.unlock() }; return fd }
     private var isCancelled: Bool { stateLock.lock(); defer { stateLock.unlock() }; return cancelled }
 
-    private func call(method: String, params: [String: Any]) throws -> [String: Any] {
+    private func call(method: String, params: [String: Any], maxBytes: Int = AgentListParser.maxBytes) throws -> [String: Any] {
         let id = requestID; requestID += 1
         let request: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
         var bytes = try JSONSerialization.data(withJSONObject: request); bytes.append(10)
         try writeAll(bytes)
-        let response = try readLine()
+        let response = try readLine(maxBytes: maxBytes)
         guard let object = (try? JSONSerialization.jsonObject(with: response)) as? [String: Any],
               object["id"] as? Int == id, object["error"] == nil else { throw CoreRPCError.malformed }
         return object
@@ -88,22 +140,25 @@ public final class CoreRPCClient {
         }
     }
 
-    private func readLine() throws -> Data {
+    private func readLine(maxBytes: Int = AgentListParser.maxBytes) throws -> Data {
         let socket = currentFD
-        var output = Data(), chunk = [UInt8](repeating: 0, count: 8192)
-        while output.count <= AgentListParser.maxBytes {
+        var chunk = [UInt8](repeating: 0, count: 8192)
+        var scanned = readBuffer.startIndex // Only bytes read since the last scan can hold the newline: keeps large lines linear.
+        while true {
+            if let newline = readBuffer[scanned...].firstIndex(of: 10) {
+                let line = Data(readBuffer[..<newline])
+                readBuffer.removeSubrange(...newline)
+                guard line.count <= maxBytes else { throw CoreRPCError.oversized }
+                return line
+            }
+            guard readBuffer.count <= maxBytes else { throw CoreRPCError.oversized }
+            scanned = readBuffer.endIndex
             try wait(fd: socket, events: Int16(POLLIN))
             let count = recv(socket, &chunk, chunk.count, 0)
             if count < 0 && (errno == EINTR || errno == EAGAIN) { continue }
             guard count > 0 else { throw CoreRPCError.unavailable }
-            if let newline = chunk[..<count].firstIndex(of: 10) {
-                output.append(contentsOf: chunk[..<newline])
-                guard output.count <= AgentListParser.maxBytes else { throw CoreRPCError.oversized }
-                return output
-            }
-            output.append(contentsOf: chunk[..<count])
+            readBuffer.append(contentsOf: chunk[..<count])
         }
-        throw CoreRPCError.oversized
     }
 
     private func wait(fd: Int32, events: Int16) throws {
@@ -123,12 +178,14 @@ public final class CoreRPCClient {
         stateLock.lock()
         if cancelled { stateLock.unlock(); close(connection.fd); return }
         fd = connection.fd; handshaken = false; requestID = 1
+        readBuffer.removeAll(keepingCapacity: false)
         stateLock.unlock()
     }
 
     private func closeTransport() {
         stateLock.lock(); let old = fd; fd = -1; stateLock.unlock()
         if old >= 0 { close(old) }
+        readBuffer.removeAll(keepingCapacity: false)
     }
 
     private static func matchesPID(_ value: Any?, _ pid: pid_t) -> Bool {

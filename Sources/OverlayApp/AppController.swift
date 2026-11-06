@@ -7,6 +7,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let sources: [SourceConfig]
     private let model: OverlayModel
     private let pollers: [SourcePoller]
+    private let eventSource: CoreEventSource?
     private let panel: PanelController
     private let delivery = LatestSections()
     private var statusItem: NSStatusItem?
@@ -24,11 +25,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         return ProcessRunner(limits: limits)
     }()
 
-    init(sources: [SourceConfig], stateDirectory: URL, read: @escaping ([String]) -> RunOutcome, cancelRead: @escaping () -> Void) {
+    init(sources: [SourceConfig], stateDirectory: URL, read: @escaping ([String]) -> RunOutcome,
+         cancelRead: @escaping () -> Void, makeEventSource: ((OverlayModel) -> CoreEventSource?)? = nil) {
         self.sources = sources
         let model = OverlayModel(sources: sources)
         self.model = model
-        pollers = sources.map { SourcePoller(source: $0, model: model, read: read, cancel: cancelRead) }
+        let eventSource = makeEventSource?(model)
+        self.eventSource = eventSource
+        pollers = sources.filter { $0.id != "local" || eventSource == nil }
+            .map { SourcePoller(source: $0, model: model, read: read, cancel: cancelRead) }
         panel = PanelController(stateFile: stateDirectory.appendingPathComponent("panel.json"))
         super.init()
     }
@@ -48,11 +53,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Freshness and retention advance with time even when no read finishes.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [model] _ in model.tick() }
         NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [model, pollers] _ in
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [model, pollers, eventSource] _ in
                 model.wake()
                 pollers.forEach { $0.refresh() }
+                eventSource?.refresh()
             }
         pollers.forEach { $0.start() }
+        eventSource?.start()
     }
 
     func shutdown() {
@@ -61,6 +68,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         timer?.invalidate()
         focusRunner.cancel()
         pollers.forEach { $0.stop() }
+        eventSource?.stop()
+        _ = eventSource?.drain(timeout: 3)
         // Children are in their own sessions; wait for each runner to finish its group cleanup.
         for poller in pollers { _ = poller.drain(timeout: 3) }
         panel.saveState()

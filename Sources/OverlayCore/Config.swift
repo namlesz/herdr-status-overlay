@@ -14,7 +14,7 @@ public struct SourceConfig {
     }
 
     public static func local(executable: String) -> SourceConfig {
-        SourceConfig(id: "local", label: "Herdr", command: [executable], interval: 2, staleAfter: seconds(6))
+        SourceConfig(id: "local", label: "Herdr", command: [executable], interval: 2, staleAfter: seconds(45))
     }
 
     public func focusArguments(paneID: String) -> [String]? {

@@ -35,6 +35,28 @@ public final class OverlayModel {
     }
 
     public func tick() { queue.async { self.store.expire(now: self.clock()); self.publish() } }
+    public func streamUpdate(_ id: String, generation: UInt64, agents: [AgentRecord],
+                             baseline: Bool = false, refresh: Bool = true) {
+        queue.sync {
+            guard store.begin(id) == generation else { return }
+            if baseline { store.rebaseline(id) }
+            store.succeed(id, generation: generation, agents: agents, now: clock(), refresh: refresh)
+            publish()
+        }
+    }
+
+    public func streamHeartbeat(_ id: String, generation: UInt64) {
+        queue.sync {
+            guard store.begin(id) == generation else { return }
+            store.heartbeat(id, now: clock())
+            publish()
+        }
+    }
+
+    public func streamFailure(_ id: String, generation: UInt64, failure: ReadFailure) {
+        queue.sync { store.fail(id, generation: generation, failure: failure); publish() }
+    }
+
     public func wake() { queue.async { self.store.wake(); self.publish() } }
 
     public func snapshot() -> [SectionView] { queue.sync { store.view(now: clock()) } }

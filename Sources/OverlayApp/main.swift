@@ -29,6 +29,7 @@ guard let core = CoreRPCClient(environment: environment) else { die("Herdr core 
 if let expected = environment["HERDR_OVERLAY_EXPECTED_CORE_PID"], Int32(expected) != core.pid {
     die("The observed Herdr core changed before overlay startup.")
 }
+core.reconnect() // Only the PID check used this socket; event sources open their own pinned connections.
 let home = environment["HOME"] ?? NSHomeDirectory()
 let stateURL: URL
 do {
@@ -63,7 +64,8 @@ if let image = dlopen(nil, RTLD_NOW), let defaultConnection = dlsym(image, "_CGS
     let connection = unsafeBitCast(defaultConnection, to: CGSDefaultConnection.self)()
     _ = unsafeBitCast(setProperty, to: CGSSetConnectionProperty.self)(connection, connection, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
 }
-let controller = AppController(sources: [source], stateDirectory: stateURL, read: readCore, cancelRead: { core.cancel() })
+let controller = AppController(sources: [source], stateDirectory: stateURL, read: readCore, cancelRead: { core.cancel() },
+                               makeEventSource: { model in CoreEventSource(environment: environment, expectedPID: core.pid, model: model) })
 app.delegate = controller
 stopOverlay = { controller.shutdown() }
 var signalSources: [DispatchSourceSignal] = []
