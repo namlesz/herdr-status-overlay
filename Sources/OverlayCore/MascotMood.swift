@@ -3,7 +3,7 @@ public enum MascotMood: Equatable {
     case sleeping, working, pairWorking, blocked, unavailable, celebrating
 
     public static func select(in sections: [SectionView], now: UInt64) -> MascotMood {
-        let fresh = sections.filter { $0.shouldDisplay && !$0.stale }
+        let fresh = sections.filter { !$0.stale }
         let rows = fresh.flatMap(\.rows)
         let workingCount = Self.workingCount(in: sections)
         if rows.contains(where: { $0.status == .blocked }) { return .blocked }
@@ -17,7 +17,7 @@ public enum MascotMood: Equatable {
     }
 
     public static func workingCount(in sections: [SectionView]) -> Int {
-        sections.filter { $0.shouldDisplay && !$0.stale }
+        sections.filter { !$0.stale }
             .flatMap(\.rows).filter { $0.status == .working }.count
     }
 }

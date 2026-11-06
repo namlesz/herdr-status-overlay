@@ -24,7 +24,7 @@ The supervisor watches for an already-running core, retries failed startup attem
 
 ## Panel behavior
 
-Each live, reported agent/child has a row; unreported shells and historical finished terminals are omitted. Remote machine terminals are included in the same aggregated snapshot and retain their stable address. Unknown future status strings map safely to unknown; `error` and `blocked` use the existing STOP appearance; a null status from a reported agent is unknown. Explicit `done` is shown for 30 seconds; increasing `turn` never infers completion, and celebrations only occur on a continuous fresh transition to `done`.
+Each live, reported agent/child with a status has a row; unreported shells, reported terminals without status, and historical finished terminals are omitted. Local and remote terminals are included in the same aggregated snapshot and retain their stable address. Unknown future status strings map safely to unknown; `error` and `blocked` use the existing STOP appearance. Explicit `done` is shown for 30 seconds; increasing `turn` never infers completion, and celebrations only occur on a continuous fresh transition to `done`.
 
 The existing floating panel, dog animations, pair activities, placement, auto-hide, scale, and visibility settings remain. Clicking a row runs the bounded `herdr-app do agent.focus --terminal <address>` command and activates the actual Herdr GUI bundle (`dev.herdr.app`), not a terminal emulator. Focus failures beep.
 

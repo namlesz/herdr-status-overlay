@@ -52,8 +52,9 @@ public enum AgentListParser {
                   CFGetTypeID(reportedValue) == CFBooleanGetTypeID() else { throw ParseError.invalidField("reported") }
             let reported = reportedValue.boolValue
             if !reported { return nil }
-            let rawStatus = status?["state"] as? String
-            if status != nil && rawStatus == nil { throw ParseError.invalidField("status.state") }
+            guard let status else { return nil }
+            let rawStatus = status["state"] as? String
+            if rawStatus == nil { throw ParseError.invalidField("status.state") }
             let mapped: ServerStatus
             switch rawStatus {
             case "working": mapped = .working
@@ -65,9 +66,9 @@ public enum AgentListParser {
             }
             let title = try optionalString(terminal, "title")
             let cwd = try optionalString(terminal, "cwd")
-            let app = try optionalString(status ?? [:], "app")
-            let msg = try optionalString(status ?? [:], "msg")
-            let kind = try optionalString(status ?? [:], "kind")
+            let app = try optionalString(status, "app")
+            let msg = try optionalString(status, "msg")
+            let kind = try optionalString(status, "kind")
             let place = cwd.map { Text.label(($0 as NSString).lastPathComponent) }.flatMap { $0.isEmpty ? nil : $0 }
             let label = [app, kind].compactMap { $0 }.map(Text.label).first { !$0.isEmpty } ?? address
             let activity = [msg, title].compactMap { $0 }.map(Text.label).first { !$0.isEmpty }

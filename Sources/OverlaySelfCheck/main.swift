@@ -78,13 +78,14 @@ do {
          "status": ["state": "working", "app": "Claude"]],
         ["address": "local/t8", "state": "live", "reported": true, "status": ["state": "future-state"]],
         ["address": "local/t9", "state": "live", "reported": true, "status": NSNull()],
+        ["address": "local/t11", "state": "live", "reported": true],
         ["address": "local/shell", "state": "live", "reported": false, "status": NSNull()],
         ["address": "local/t10", "state": "finished", "reported": true, "status": ["state": "done"]]
     ], "machines": [], "hidden_finished": 1]]
     let records = try! AgentListParser.parse(JSONSerialization.data(withJSONObject: raw))
-    check(records.count == 3 && records[0].key.paneID == "machine/t7", "aggregated live local and remote terminal records parsed")
+    check(records.count == 2 && records[0].key.paneID == "machine/t7", "aggregated live local and remote terminal records parsed")
     check(records[0].status == .working && records[0].label == "Claude" && records[0].place == "project", "new status and detail fields mapped")
-    check(records[1].status == .unknown && records[2].status == .unknown, "future status and null reported status map safely")
+    check(records[1].status == .unknown, "future status remains present as unknown; reported null and absent statuses are omitted")
     var errorStatus: [String: Any] = ["jsonrpc": "2.0", "id": 1, "result": ["terminals": [["address": "x", "state": "live", "reported": true, "status": ["state": "error"]]]]]
     check((try? AgentListParser.parse(JSONSerialization.data(withJSONObject: errorStatus)))?.first?.status == .blocked, "error maps to STOP status")
     errorStatus = ["jsonrpc": "2.0", "id": 1, "result": ["terminals": [["address": "x", "state": "live", "reported": true, "status": ["state": "done"]]]]]
@@ -407,7 +408,7 @@ do {
     let remote = SourceConfig(id: "machine:box", label: "box", command: ["/fake/herdr"], interval: 5, staleAfter: seconds(20))
     var store = Store(sources: [local, remote])
     func displayed(_ now: UInt64) -> [String] {
-        store.view(now: now).filter(\.shouldDisplay).map(\.id)
+        store.view(now: now).map(\.id)
     }
     let t0: UInt64 = 1_000 * 1_000_000_000
     func section(_ id: String, _ now: UInt64) -> SectionView { store.view(now: now).first { $0.id == id }! }
@@ -420,27 +421,41 @@ do {
           "counts, blocked row before idle row")
     check(section("machine:box", t0).problem == .waiting, "sources are independent")
     check(store.view(now: t0) == store.view(now: t0 + seconds(1)), "unchanged heartbeat gives equal view")
-    check(displayed(t0) == ["local"], "remote is hidden until its first successful read")
+    check(displayed(t0) == ["local", "machine:box"], "source section remains visible while waiting")
 
     g = store.begin("local")
     store.succeed("local", generation: g, agents: parse([agent("w1:p2", "idle", seq: 3)]), now: t0 + seconds(2))
     check(section("local", t0 + seconds(2)).rows.map(\.key.paneID) == ["w1:p2"], "full replacement removes agents")
+    func snapshot(_ terminal: [String: Any]) -> [AgentRecord] {
+        let data = try! JSONSerialization.data(withJSONObject: ["result": ["terminals": [terminal]]])
+        return try! AgentListParser.parse(data)
+    }
+    let missingStatus: [String: Any] = ["address": "w1:p2", "state": "live", "reported": true]
+    g = store.begin("local")
+    store.succeed("local", generation: g, agents: snapshot(["address": "w1:p2", "state": "live", "reported": true, "status": ["state": "working"]]), now: t0 + seconds(3))
+    check(section("local", t0 + seconds(3)).rows.count == 1, "reported live agent with status is shown")
+    g = store.begin("local")
+    store.succeed("local", generation: g, agents: snapshot(missingStatus), now: t0 + seconds(4))
+    check(section("local", t0 + seconds(4)).rows.isEmpty, "replacement omits reported live agent after status disappears")
+    g = store.begin("local")
+    store.succeed("local", generation: g, agents: snapshot(["address": "w1:p2", "state": "live", "reported": true, "status": ["state": "working"]]), now: t0 + seconds(5))
+    check(section("local", t0 + seconds(5)).rows.count == 1, "agent returns when status is reported again")
 
-    view = section("local", t0 + seconds(9))
+    view = section("local", t0 + seconds(12))
     check(view.stale && view.counts == nil && view.rows.count == 1 && view.problem == .outdated, "local stale after 6 s")
 
     g = store.begin("machine:box")
     store.succeed("machine:box", generation: g, agents: parse([agent("w9:p1", "idle", seq: 1)]), now: t0)
     check(!section("machine:box", t0 + seconds(19)).stale, "remote fresh before 20 s")
     check(section("machine:box", t0 + seconds(21)).stale, "remote stale after 20 s")
-    check(displayed(t0 + seconds(19)) == ["local", "machine:box"], "fresh remote is shown")
-    check(displayed(t0 + seconds(21)) == ["local"], "outdated remote is hidden, local stays")
+    check(displayed(t0 + seconds(19)) == ["local", "machine:box"], "fresh source remains visible")
+    check(displayed(t0 + seconds(21)) == ["local", "machine:box"], "stale source section remains visible")
 
     g = store.begin("machine:box")
     store.fail("machine:box", generation: g, failure: .timeout)
     check(section("machine:box", t0 + seconds(1)).problem == .failed(.timeout), "failure is immediately stale")
     check(section("local", t0 + seconds(2)).problem == nil, "remote failure does not touch local")
-    check(displayed(t0 + seconds(2)) == ["local"], "failed remote is immediately hidden")
+    check(displayed(t0 + seconds(2)) == ["local", "machine:box"], "failed source section remains visible")
 
     store.expire(now: t0 + seconds(61))
     view = section("machine:box", t0 + seconds(61))
@@ -448,9 +463,9 @@ do {
     store.succeed("machine:box", generation: g, agents: [], now: t0 + seconds(62))
     check(displayed(t0 + seconds(62)) == ["local", "machine:box"], "successful reconnect restores even an empty remote")
     store.wake()
-    check(displayed(t0 + seconds(63)) == ["local"], "wake hides remote until a fresh read")
-    let remoteOnly = Store(sources: [remote]).view(now: t0).filter(\.shouldDisplay)
-    check(remoteOnly.isEmpty, "no available cards leaves the panel empty")
+    check(displayed(t0 + seconds(63)) == ["local", "machine:box"], "wake keeps stale source diagnostics visible")
+    let waitingSource = Store(sources: [remote]).view(now: t0)
+    check(waitingSource.count == 1 && waitingSource[0].problem == .waiting, "waiting source diagnostics remain available")
 
     var waking = Store(sources: [local])
     g = waking.begin("local")

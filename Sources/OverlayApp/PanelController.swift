@@ -349,7 +349,6 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     /// Compact content depends on counters and availability, not agent titles or row order.
     func render(_ sections: [SectionView]) {
-        let sections = sections.filter(\.shouldDisplay)
         guard sections != rendered else { return }
         let sameSummary = compact && rendered.map { previous in
             previous.isEmpty == sections.isEmpty
@@ -530,7 +529,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         celebrationTimer?.invalidate()
         celebrationTimer = nil
         if panel.isVisible, mood == .celebrating,
-           let event = sections.filter({ $0.shouldDisplay && !$0.stale }).flatMap(\.rows)
+           let event = sections.filter({ !$0.stale }).flatMap(\.rows)
             .compactMap(\.completionEventAt).filter({ $0 <= now }).max() {
             let remaining = Double(seconds(3) - (now - event)) / 1_000_000_000
             celebrationTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
