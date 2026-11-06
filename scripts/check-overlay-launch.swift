@@ -32,3 +32,44 @@ precondition(contents.contains("started") && contents.contains("finished"), "hel
 let permissions = try manager.attributesOfItem(atPath: log.path)[.posixPermissions] as! Int
 precondition(permissions & 0o077 == 0, "state log is private")
 print("Manual launch script checks passed (background, immediate return, private log).")
+
+// Compile the real startup guard without connecting to core or initializing AppKit.
+let appSource = try String(contentsOf: root.appendingPathComponent("Sources/OverlayApp/main.swift"), encoding: .utf8)
+let detachGuards = appSource.split(separator: "\n").filter { $0.contains("Unable to detach overlay session.") }
+precondition(detachGuards.count == 1, "locates the production session-detachment guard")
+let fixtureSource = temporary.appendingPathComponent("session-check.swift")
+let fixtureBinary = temporary.appendingPathComponent("session-check")
+try """
+import Darwin
+func die(_ message: String) -> Never {
+    fputs(message + "\\n", stderr); exit(2)
+}
+let joinsParentGroup = CommandLine.arguments.count > 1
+if joinsParentGroup {
+    guard let parentGroup = pid_t(CommandLine.arguments[1]), setpgid(0, parentGroup) == 0 else {
+        die("Unable to join the test parent's process group.")
+    }
+    precondition(getpgrp() != getpid(), "manual launch starts as a process-group member")
+} else {
+    precondition(getpgrp() == getpid(), "Foundation Process creates a process-group leader")
+    precondition(setsid() == -1 && errno == EPERM, "reproduces the supervisor startup failure")
+}
+let originalSession = getsid(0)
+\(detachGuards[0])
+precondition(getpgrp() == getpid(), "overlay has its own process group")
+precondition(getsid(0) == (joinsParentGroup ? getpid() : originalSession),
+             "manual launch detaches its session; supervisor launch preserves its session")
+""".write(to: fixtureSource, atomically: true, encoding: .utf8)
+let compiler = Process()
+compiler.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+compiler.arguments = ["swiftc", fixtureSource.path, "-o", fixtureBinary.path]
+try compiler.run(); compiler.waitUntilExit()
+precondition(compiler.terminationStatus == 0, "session-detachment fixture compiles")
+for arguments in [[], [String(getpgrp())]] {
+    let child = Process()
+    child.executableURL = fixtureBinary; child.arguments = arguments
+    try child.run(); child.waitUntilExit()
+    precondition(child.terminationReason == .exit && child.terminationStatus == 0,
+                 "session detachment succeeds for supervisor and manual launch")
+}
+print("Session-detachment checks passed (Foundation Process leader and inherited process group).")

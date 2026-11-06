@@ -45,7 +45,8 @@ let lockFD = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
 var lockInfo = stat()
 guard lockFD >= 0, fstat(lockFD, &lockInfo) == 0, lockInfo.st_mode & S_IFMT == S_IFREG,
       lockInfo.st_uid == getuid(), flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { exit(0) }
-guard setsid() >= 0 else { die("Unable to detach overlay session.") }
+// Foundation Process already gives supervised children their own process group; setsid would fail with EPERM.
+guard getpgrp() == getpid() || setsid() >= 0 else { die("Unable to detach overlay session.") }
 var stopOverlay: () -> Void = { exit(0) }
 let serverWatch = ServerLifetime.watch(pid: core.pid) { stopOverlay() }
 let source = SourceConfig.local(executable: "core-rpc")
