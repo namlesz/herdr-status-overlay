@@ -129,7 +129,7 @@ public struct Store {
             var counts = Dictionary(uniqueKeysWithValues: DisplayStatus.allCases.map { ($0, 0) })
             var rows: [RowView] = []
             for agent in source.agents {
-                let status = source.tracker.display(agent, now: now)
+                let status = source.tracker.display(agent)
                 counts[status, default: 0] += 1
                 rows.append(RowView(sourceID: source.config.id, key: agent.key, status: status,
                                     label: agent.label,

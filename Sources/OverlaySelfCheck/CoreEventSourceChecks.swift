@@ -151,7 +151,7 @@ func checkCoreEventSource() {
         waitFor("source accepts real heartbeat before next event at \(time)", { !view().stale && view().rows.contains { $0.key.paneID == "t1" && $0.activity == title } })
     }
     check(fixture.subscriptions() == 1, "healthy heartbeat traffic never resubscribes")
-    check(view().rows.first { $0.key.paneID == "t1" }?.status == .idle, "event source does not renew done TTL on heartbeats")
+    check(view().rows.first { $0.key.paneID == "t1" }?.status == .done, "heartbeats preserve no-label pending completion")
     fixture.setHealth("unreachable"); fixture.setTime(105)
     fixture.heartbeatAndTitle("offline")
     waitFor("remote is hidden on next 15-second health poll while local remains fresh", { !view().stale && view().rows.map(\.key.paneID) == ["t1"] && view().rows[0].activity == "offline" })

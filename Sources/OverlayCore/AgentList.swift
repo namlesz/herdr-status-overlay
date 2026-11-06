@@ -18,9 +18,10 @@ public struct AgentRecord {
     public let place: String?
     public let activity: String?
     public let status: ServerStatus
-
-
+    public let turn: UInt64?
+    public let seenTurn: UInt64?
 }
+
 
 public enum ParseError: Error, Equatable { case oversized, malformed, tooManyAgents, duplicate, invalidField(String) }
 
@@ -73,10 +74,20 @@ public enum AgentListParser {
             let label = [app, kind].compactMap { $0 }.map(Text.label).first { !$0.isEmpty } ?? address
             let activity = [msg, title].compactMap { $0 }.map(Text.label).first { !$0.isEmpty }
             return AgentRecord(key: AgentKey(paneID: address), label: label, place: place,
-                               activity: activity, status: mapped)
+                               activity: activity, status: mapped, turn: unsignedInteger(terminal["turn"]),
+                               seenTurn: ((terminal["labels"] as? [String: Any])?["herdr.seen"] as? String).flatMap(unsignedDecimal))
         }
     }
 
+    private static func unsignedInteger(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return unsignedDecimal(number.stringValue)
+    }
+
+    private static func unsignedDecimal(_ value: String) -> UInt64? {
+        guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+        return UInt64(value)
+    }
     private static func optionalString(_ object: [String: Any], _ field: String) throws -> String? {
         switch object[field] {
         case nil, is NSNull: return nil

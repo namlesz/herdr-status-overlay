@@ -9,9 +9,12 @@ func archivedHistoryFixture() -> [[String: Any]] {
 }
 
 func checkCoreEvents() {
-    func terminal(_ address: String, _ state: String = "working") -> [String: Any] {
-        ["address": address, "state": "live", "reported": true, "status": ["state": state],
-         "cwd": "/repo", "title": "task", "labels": ["agent": "true"]]
+    func terminal(_ address: String, _ state: String = "working", turn: Any? = nil, seen: Any? = nil) -> [String: Any] {
+        var value: [String: Any] = ["address": address, "state": "live", "reported": true, "status": ["state": state],
+                                    "cwd": "/repo", "title": "task", "labels": ["agent": "true"]]
+        if let turn { value["turn"] = turn }
+        if let seen { value["labels"] = ["agent": "true", "herdr.seen": seen] }
+        return value
     }
     func event(_ seq: Any, _ type: String, _ address: String = "t1", _ data: Any = [String: Any]()) -> [String: Any] {
         ["jsonrpc": "2.0", "method": "event", "params": ["seq": seq, "type": type, "terminal": address, "data": data]]
@@ -162,11 +165,94 @@ func checkCoreEvents() {
         model.streamUpdate("local", generation: current, agents: try reducer.apply(event(2, "status", "t1", status(["state": "done"])))!)
         now = seconds(49)
         model.streamUpdate("local", generation: current, agents: try reducer.apply(event(3, "status", "t1", status(["state": "idle"])))!)
-        check(model.snapshot()[0].rows[0].status == .done && model.snapshot()[0].rows[0].completionEventAt == seconds(48), "done then idle preserves TTL and celebration before UI coalescing")
+        check(model.snapshot()[0].rows[0].status == .done && model.snapshot()[0].rows[0].completionEventAt == seconds(48), "no-label idle status preserves pending completion and celebration")
         for time in [60.0, 75, 90, 105, 120] { now = seconds(time); model.streamHeartbeat("local", generation: current) }
         check(!model.snapshot()[0].stale && model.snapshot()[0].rows.count == 1, "heartbeats preserve idle cache beyond retention")
-        check(model.snapshot()[0].rows[0].status == .idle, "heartbeats do not renew done TTL")
+        check(model.snapshot()[0].rows[0].status == .done, "heartbeats preserve unacknowledged completion")
         model.streamUpdate("local", generation: current, agents: try CoreEventReducer(snapshot: ["seq": 4, "terminals": [terminal("t1", "done")]]).currentRecords(), baseline: true)
         check(model.snapshot()[0].rows[0].completionEventAt == nil, "missed baseline does not celebrate recovery")
+        let labels = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [
+            terminal("local/t1", "done", turn: UInt64.max, seen: String(UInt64.max - 1)),
+            terminal("host/t2", "done", turn: 8, seen: "8")
+        ]]).currentRecords()
+        let local = labels[0], remote = labels[1]
+        check(local.key.paneID == "local/t1" && local.turn == UInt64.max && local.seenTurn == UInt64.max - 1,
+              "exact uint64 turn and local seen label parse")
+        check(remote.key.paneID == "host/t2" && remote.turn == 8 && remote.seenTurn == 8,
+              "remote seen label parses by stable address")
+        let tracker = CompletionTracker()
+        check(tracker.display(local) == .done && tracker.display(remote) == .idle,
+              "done is pending only when turn exceeds valid seen label")
+        var idleUnread = terminal("t3", "idle", turn: 9, seen: "8")
+        let unread = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [idleUnread]]]))[0]
+        check(tracker.display(unread) == .done, "idle with a valid unread turn projects done")
+        idleUnread["labels"] = ["other": "9"]
+        let noReceipt = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [idleUnread]]]))[0]
+        check(noReceipt.seenTurn == nil && tracker.display(noReceipt) == .idle,
+              "missing read label and plain idle turn do not imply completion")
+        for badSeen: Any in ["", "-1", "1.0", String(UInt64.max) + "0", true] {
+            var malformed = terminal("bad", "done", turn: 4)
+            malformed["labels"] = ["herdr.seen": badSeen]
+            let record = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [malformed]]]))[0]
+            check(record.seenTurn == nil && tracker.display(record) == .done,
+                  "invalid seen value never acknowledges raw done")
+        }
+        let boolTurn = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [terminal("bool", "done", turn: true, seen: "0")]]]))[0]
+        let overflowTurn = try AgentListParser.parse(Data(#"{"result":{"terminals":[{"address":"overflow","state":"live","reported":true,"status":{"state":"done"},"turn":18446744073709551616,"labels":{"herdr.seen":"0"}}]}}"#.utf8))[0]
+        check(overflowTurn.turn == nil && tracker.display(overflowTurn) == .done, "overflow turn is not converted through lossy numeric storage")
+        check(boolTurn.turn == nil && tracker.display(boolTurn) == .done, "boolean turn is not accepted as an integer")
+        let override = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [
+            terminal("work", "working", turn: 9, seen: "0"), terminal("block", "blocked", turn: 9, seen: "0")
+        ]]]))
+        check(override.map(tracker.display) == [.working, .blocked], "working and blocked override unread labels")
+
+        let seenAhead = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [terminal("ahead", "done", turn: 4, seen: "5")]]]))[0]
+        let turnKey = AgentKey(paneID: "turn-only")
+        var turnTracker = CompletionTracker()
+        turnTracker.apply(try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [terminal("turn-only", "idle", turn: 1, seen: "1")]]])), now: 1)
+        let turnUpdate = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [terminal("turn-only", "idle", turn: 2, seen: "1")]]]))
+        turnTracker.apply(turnUpdate, now: 2)
+        check(turnTracker.display(turnUpdate[0]) == .done && turnTracker.completionEventAt(turnKey) == nil,
+              "turn-only unread transition does not create a celebration")
+        check(tracker.display(seenAhead) == .idle, "seen turn above current turn is an idle projection")
+        let unknown = try AgentListParser.parse(JSONSerialization.data(withJSONObject: ["result": ["terminals": [terminal("unknown", "future", turn: 9, seen: "0")]]]))[0]
+        check(tracker.display(unknown) == .unknown, "unknown status remains unknown despite unread label")
+        var labelNow = seconds(90)
+        let labelModel = OverlayModel(sources: [.local(executable: "/fake")], clock: { labelNow })
+        let labelGeneration = labelModel.begin("local")
+        var labelReducer = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [terminal("t1", "idle", turn: 6, seen: "6")]])
+        labelModel.streamUpdate("local", generation: labelGeneration, agents: try labelReducer.currentRecords(), baseline: true)
+        let doneStatus = try labelReducer.apply(event(2, "status", "t1", status(["state": "done"])))!
+        labelModel.streamUpdate("local", generation: labelGeneration, agents: doneStatus)
+        check(labelModel.snapshot()[0].rows[0].status == .idle && labelModel.snapshot()[0].rows[0].completionEventAt == seconds(90),
+              "status transition records celebration while turn still equals seen")
+        let advancedTurn = try labelReducer.apply(event(3, "turn", "t1", ["turn": 7]))!
+        labelModel.streamUpdate("local", generation: labelGeneration, agents: advancedTurn)
+        check(labelModel.snapshot()[0].rows[0].status == .done && labelModel.snapshot()[0].rows[0].completionEventAt == seconds(90),
+              "turn after status reveals done without losing completion event")
+        let readLabels = try labelReducer.apply(event(4, "labels", "t1", ["labels": ["other": "x", "herdr.seen": "7"]]))!
+        labelModel.streamUpdate("local", generation: labelGeneration, agents: readLabels)
+        check(labelModel.snapshot()[0].rows[0].status == .idle && labelModel.snapshot()[0].rows[0].completionEventAt == seconds(90),
+              "whole-map read-label update acknowledges without a new celebration")
+        labelModel.streamHeartbeat("local", generation: labelGeneration)
+        check(labelModel.snapshot()[0].rows[0].status == .idle, "heartbeat does not resurrect a label-acknowledged done")
+        let unreadLabels = try labelReducer.apply(event(5, "labels", "t1", ["labels": ["herdr.seen": "6"]]))!
+        labelModel.streamUpdate("local", generation: labelGeneration, agents: unreadLabels)
+        check(labelModel.snapshot()[0].rows[0].status == .done && labelModel.snapshot()[0].rows[0].completionEventAt == seconds(90),
+              "mark-unread changes current projection without replaying celebration")
+        labelModel.streamUpdate("local", generation: labelGeneration,
+                                agents: try labelReducer.apply(event(6, "status", "t1", status(["state": "working"])))!)
+        labelNow = seconds(91)
+        labelModel.streamUpdate("local", generation: labelGeneration,
+                                agents: try labelReducer.apply(event(7, "status", "t1", status(["state": "done"])))!)
+        labelModel.streamUpdate("local", generation: labelGeneration,
+                                agents: try labelReducer.apply(event(8, "turn", "t1", ["turn": 8]))!)
+        check(labelModel.snapshot()[0].rows[0].status == .done && labelModel.snapshot()[0].rows[0].completionEventAt == seconds(91),
+              "next status completion creates a fresh event")
+        labelModel.wake()
+        let afterWake = labelModel.begin("local")
+        labelModel.streamUpdate("local", generation: afterWake, agents: try labelReducer.currentRecords(), baseline: true)
+        check(labelModel.snapshot()[0].rows[0].completionEventAt == nil && labelModel.snapshot()[0].rows[0].status == .done,
+              "wake baseline preserves unread projection without replaying celebration")
     } catch { check(false, "stream model lifecycle: \(error)") }
 }

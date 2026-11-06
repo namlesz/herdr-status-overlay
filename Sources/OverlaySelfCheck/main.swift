@@ -49,6 +49,7 @@ func json(_ agents: [[String: Any]], extra: [String: Any] = [:]) -> Data {
         if let cwd = agent["cwd"] { terminal["cwd"] = cwd }
         if let title = agent["terminal_title_stripped"] { terminal["title"] = title }
         if let turn = agent["turn"] { terminal["turn"] = turn }
+        if let labels = agent["labels"] { terminal["labels"] = labels }
         return terminal
     }
     return try! JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1,
@@ -108,18 +109,18 @@ do {
     let key = AgentKey(paneID: "w1:p1", terminalID: "t-1")
     tracker.apply(parse([agent("w1:p1", "working", seq: 1)]), now: 0)
     tracker.apply(parse([agent("w1:p1", "done", seq: 900)]), now: 10)
-    check(tracker.isPending(key, now: 10) && tracker.completionEventAt(key) == 10, "continuous transition to explicit done is celebrated")
+    check(tracker.display(parse([agent("w1:p1", "done")])[0]) == .done && tracker.completionEventAt(key) == 10, "continuous transition to explicit done is celebrated")
     tracker.rebaseline()
     check(tracker.completionEventAt(key) == nil, "recovery clears completion event")
-    tracker.apply(parse([agent("w1:p1", "done", seq: 901)]), now: 20)
-    check(tracker.completionEventAt(key) == nil, "recovered done does not re-emit celebration")
-    tracker.apply(parse([agent("w1:p1", "working", seq: 902)]), now: 21)
-    check(!tracker.isPending(key, now: 21), "working clears done state regardless of turn marker")
+    tracker.apply(parse([agent("w1:p1", "done")]), now: 20)
+    check(tracker.completionEventAt(key) == nil && tracker.display(parse([agent("w1:p1", "done")])[0]) == .done,
+          "recovered done stays pending without replaying celebration")
+    tracker.apply(parse([agent("w1:p1", "working")]), now: 21)
+    check(tracker.display(parse([agent("w1:p1", "working")])[0]) == .working, "working overrides completion")
     tracker.apply(parse([agent("w1:p1", "idle", seq: 9999)]), now: 22)
-    check(!tracker.isPending(key, now: 22), "turn growth never infers completion")
+    check(tracker.display(parse([agent("w1:p1", "idle", seq: 9999)])[0]) == .idle, "turn growth without a seen label never infers completion")
     tracker.apply(parse([agent("w1:p1", "done")]), now: 23)
-    check(tracker.isPending(key, now: 23), "explicit done displays after a fresh transition")
-    check(!tracker.isPending(key, now: 23 + SourceConfig.finishedTTL), "done expires at 30 seconds")
+    check(tracker.display(parse([agent("w1:p1", "done")])[0]) == .done, "explicit done without a seen label remains pending")
 
     var moodStore = Store(sources: [.local(executable: "/fake")])
     func moodSnapshot(_ agents: [[String: Any]], at time: Double) -> [SectionView] {
@@ -504,19 +505,14 @@ do {
         return store.view(now: seconds(time))[0]
     }
     check(snapshot("done", 0).counts?[.done] == 1, "server done is finished on first snapshot")
-    check(snapshot("done", 29).rows.first?.status == .done, "repeated server done stays until TTL")
-    store.expire(now: seconds(30))
-    let expired = store.view(now: seconds(30))[0]
-    check(expired.rows.map(\.status) == [.idle] && expired.counts?[.idle] == 1, "server done expires exactly at 30 seconds")
-    check(snapshot("done", 30).rows.map(\.status) == [.idle], "unchanged server done does not restart expiry")
+    check(snapshot("done", 29).rows.first?.status == .done, "repeated server done stays pending")
+    check(snapshot("done", 600).rows.map(\.status) == [.done], "no-label explicit done remains pending beyond 30 seconds")
     check(snapshot("working", 31).rows.first?.status == .working, "working row is visible")
     check(snapshot("idle", 32).rows.map(\.status) == [.idle], "working clears old completion")
     check(snapshot("done", 33).counts?[.done] == 1, "new server done transition starts a new finish")
     check(snapshot("working", 34, seq: 2).counts?[.done] == 0, "working clears completion even with a new marker")
     check(snapshot("idle", 35, seq: 2).rows.map(\.status) == [.idle], "cleared completion cannot resurface")
     check(snapshot("idle", 36, seq: 3).rows.first?.status == .idle, "turn growth never creates a finish")
-    _ = snapshot("idle", 65, seq: 3)
-    check(store.view(now: seconds(66))[0].rows.map(\.status) == [.idle], "marker-based finish expires after 30 seconds too")
 
     var detailed = agent("w1:p1", "working")
     detailed["cwd"] = "/repo/finance"

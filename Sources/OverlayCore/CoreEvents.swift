@@ -61,11 +61,11 @@ public struct CoreEventReducer {
                   let reported = data["reported"] as? NSNumber,
                   CFGetTypeID(reported) == CFBooleanGetTypeID() else { throw CoreEventError.malformed }
             try patch(address) { $0["status"] = data["status"]; $0["records"] = data["records"]; $0["reported"] = reported }
-        case "turn": try patch(address) { $0["turn"] = data["turn"] }; return nil
+        case "turn": try patch(address) { $0["turn"] = data["turn"] }
         case "title": try patch(address) { $0["title"] = data["title"] }
         case "labels":
             if let record = data["record"] as? [String: Any] { try upsert(record, address: address) }
-            else { try patch(address) { $0["labels"] = data["labels"] }; return nil }
+            else { try patch(address) { $0["labels"] = data["labels"] } }
         case "size": try patch(address) { $0["cols"] = data["cols"]; $0["rows"] = data["rows"] }; return nil
         case "foreground": try patch(address) { $0["foreground"] = data }; return nil
         case "keep": try patch(address) { $0["keep"] = data["keep"] }; return nil

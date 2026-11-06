@@ -7,7 +7,6 @@ public struct SourceConfig {
     public let interval: Double
     public let staleAfter: UInt64
     public static let retention = seconds(60)
-    public static let finishedTTL = seconds(30)
 
     public init(id: String, label: String, command: [String], interval: Double, staleAfter: UInt64) {
         self.id = id; self.label = label; self.command = command; self.interval = interval; self.staleAfter = staleAfter
