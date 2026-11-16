@@ -8,6 +8,16 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+private final class HoverTrackingView: NSView {
+    var onHoverChange: (() -> Void)?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { onHoverChange?() }
+    override func mouseExited(with event: NSEvent) { onHoverChange?() }
+}
 /// Illustrated dog frames, decoded once from the bundled PNGs.
 private enum CorgiArt {
     static let frames: [MascotFrame: NSImage] = {
@@ -159,6 +169,7 @@ private func trackPointingHand(_ view: NSView) {
 
 /// Agent row that reacts to a click without dragging the panel or needing it to be key first.
 private final class ClickableRow: NSStackView {
+    private(set) var hovered = false
     var onClick: (() -> Void)?
 
     override var mouseDownCanMoveWindow: Bool { false }
@@ -178,12 +189,19 @@ private final class ClickableRow: NSStackView {
         trackPointingHand(self)
     }
     override func mouseEntered(with event: NSEvent) {
+        hovered = true
         NSCursor.pointingHand.set()
         showHighlight(true)
     }
     override func mouseExited(with event: NSEvent) {
+        hovered = false
         NSCursor.arrow.set()
         showHighlight(false)
+    }
+
+    override func layout() {
+        super.layout()
+        if hovered { showHighlight(true) }
     }
 
     /// Soft backdrop under the hovered row, slightly wider than its content; rows sit on dark cards.
@@ -209,16 +227,19 @@ private final class ClickableRow: NSStackView {
 
 /// Chevron toggle that shows the hand like the clickable rows and brightens on hover.
 private final class PointerButton: NSButton {
+    private(set) var hovered = false
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackPointingHand(self)
     }
     override func mouseEntered(with event: NSEvent) {
+        hovered = true
         NSCursor.pointingHand.set()
         contentTintColor = .labelColor
         super.mouseEntered(with: event)
     }
     override func mouseExited(with event: NSEvent) {
+        hovered = false
         NSCursor.arrow.set()
         contentTintColor = .secondaryLabelColor
         super.mouseExited(with: event)
@@ -238,10 +259,14 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let stateFile: URL
     private var state: PanelState
     private var rendered: [SectionView]?
+    private var sectionCards: [String: NSStackView] = [:]
+    private var rowViews: [String: [AgentKey: ClickableRow]] = [:]
     private let corgi = CorgiView(frame: NSRect(x: 0, y: 0, width: CorgiView.side, height: CorgiView.side))
     private var animationTimer: Timer?
     private var celebrationTimer: Timer?
     private var hover = AutoHideHover()
+    private var hoverTimer: Timer?
+    private var hoverMonitors: [Any] = []
     private var compact: Bool { state.showsCompact(hovered: hover.expanded) }
     private var mood: MascotMood?
     private var tick = 0
@@ -280,6 +305,13 @@ final class PanelController: NSObject, NSWindowDelegate {
                                                           object: nil)
     }
 
+    deinit {
+        hoverTimer?.invalidate()
+        animationTimer?.invalidate()
+        celebrationTimer?.invalidate()
+        hoverMonitors.forEach { NSEvent.removeMonitor($0) }
+    }
+
     /// User preference, independent of automatic hiding when no cards are available.
     var isVisibilityEnabled: Bool { state.visible }
 
@@ -316,20 +348,47 @@ final class PanelController: NSObject, NSWindowDelegate {
         state.autoHide = enabled
         hover = AutoHideHover()
         rebuildContent()
+        updateHoverMonitoring()
         recordPosition()
         saveState()
     }
 
     private func updateHover() {
-        guard state.autoHide else { return }
-        // Keep the panel open throughout dragging, including the native window-tracking loop.
+        guard state.autoHide, panel.isVisible else { return }
         let inside = panel.frame.contains(NSEvent.mouseLocation)
             || (hover.expanded && NSEvent.pressedMouseButtons != 0)
+        if inside {
+            hoverTimer?.invalidate()
+            hoverTimer = nil
+        }
         if hover.update(inside: inside, now: ProcessInfo.processInfo.systemUptime) {
             rebuildContent()
             recordPosition()
             saveState()
         }
+        if !inside && hover.expanded && hoverTimer == nil {
+            hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+                self?.hoverTimer = nil
+                self?.updateHover()
+            }
+        }
+    }
+
+    private func updateHoverMonitoring() {
+        hoverTimer?.invalidate()
+        hoverTimer = nil
+        hoverMonitors.forEach { NSEvent.removeMonitor($0) }
+        hoverMonitors.removeAll()
+        guard state.autoHide, panel.isVisible else { return }
+        let mask: NSEvent.EventTypeMask = [.leftMouseUp, .rightMouseUp, .otherMouseUp]
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in DispatchQueue.main.async { self?.updateHover() } }) {
+            hoverMonitors.append(monitor)
+        }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            DispatchQueue.main.async { self?.updateHover() }
+            return event
+        }) { hoverMonitors.append(monitor) }
+        updateHover()
     }
 
     func restoreVisibility() { setVisible(state.visible) }
@@ -349,17 +408,23 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     /// Compact content depends on counters and availability, not agent titles or row order.
     func render(_ sections: [SectionView]) {
-        guard sections != rendered else { return }
+        guard sections != rendered || zip(sections.flatMap(\.rows), (rendered ?? []).flatMap(\.rows)).contains(where: { $0.key.terminalID != $1.key.terminalID }) else { return }
         let sameSummary = compact && rendered.map { previous in
             previous.isEmpty == sections.isEmpty
                 && SectionView.activeCounts(in: previous) == SectionView.activeCounts(in: sections)
                 && previous.filter(\.stale).map(\.label) == sections.filter(\.stale).map(\.label)
         } == true
+        let previous = rendered
         rendered = sections
-        if sameSummary { updateCorgiMood() } else { rebuildContent() }
+        if sameSummary { updateCorgiMood() }
+        else if !compact, let previous {
+            updateSections(sections, previous: previous)
+        } else { rebuildContent() }
     }
 
     private func rebuildContent() {
+        sectionCards.removeAll()
+        rowViews.removeAll()
         // Removed rows and buttons never get mouseExited, so drop a hand left over from them.
         NSCursor.arrow.set()
         let sections = rendered ?? []
@@ -383,6 +448,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let visible = state.visible && !(rendered ?? []).isEmpty
         if visible == panel.isVisible { return }
         if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
+        updateHoverMonitoring()
         if !visible { hover = AutoHideHover(); rebuildContent() }
         updateCorgiMood()
     }
@@ -408,7 +474,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.delegate = self
         panel.setAccessibilityLabel("Herdr Status Overlay")
 
-        let background = NSView()
+        let background = HoverTrackingView()
+        background.onHoverChange = { [weak self] in self?.updateHover() }
         panel.contentView = background
 
         scroll.drawsBackground = false
@@ -500,6 +567,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     @objc private func activeSpaceChanged() {
+        updateHover()
         updateCorgiMood()
         guard panel.isVisible, flipStartedAt == nil, let mood,
               MascotAnimation.flipFrame(for: mood, elapsed: 0,
@@ -538,7 +606,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         let animate = MascotAnimation.isAnimated(for: mood,
                           reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        if panel.isVisible && (state.autoHide || animate || pairAnimation.needsTicks || flipStartedAt != nil) {
+        if panel.isVisible && (animate || pairAnimation.needsTicks || flipStartedAt != nil) {
             guard animationTimer == nil else { return }
             animationTimer = Timer.scheduledTimer(withTimeInterval: MascotAnimation.tickInterval,
                                                   repeats: true) { [weak self] _ in
@@ -566,7 +634,6 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self.showCorgiFrame()
                 if wasPairTicking && !self.pairAnimation.needsTicks { self.updateCorgiMood() }
                 if wasFlipping && self.flipStartedAt == nil { self.updateCorgiMood() }
-                self.updateHover()
             }
         } else {
             animationTimer?.invalidate()
@@ -646,29 +713,113 @@ final class PanelController: NSObject, NSWindowDelegate {
         stack.alignment = alignLeft ? .leading : .trailing
     }
 
-    private func addSection(_ section: SectionView) {
-        let card = makeCard()
-
+    private func updateSections(_ sections: [SectionView], previous: [SectionView]) {
+        let origin = scroll.contentView.bounds.origin
+        let ids = Set(sections.map(\.id))
+        let previousSections = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0) })
+        // All labels are single-line; only row/detail/problem presence can change card height.
+        let layoutChanged = sections.count != previous.count || sections.contains { section in
+            guard let old = previousSections[section.id], old.rows.count == section.rows.count,
+                  (old.problem == nil) == (section.problem == nil) else { return true }
+            return zip(old.rows, section.rows).contains { before, after in
+                (before.activity != nil && before.activity != before.label)
+                    != (after.activity != nil && after.activity != after.label)
+            }
+        }
+        for (id, card) in sectionCards where !ids.contains(id) {
+            let button = (card.arrangedSubviews.first as? NSStackView)?.arrangedSubviews.compactMap { $0 as? PointerButton }.first
+            let removedHover = button?.hovered == true || rowViews[id]?.values.contains(where: { $0.hovered }) == true
+            let remainingRowHover = rowViews.contains { $0.key != id && $0.value.values.contains(where: { $0.hovered }) }
+            if removedHover && !remainingRowHover { NSCursor.arrow.set() }
+            card.removeFromSuperview()
+            sectionCards.removeValue(forKey: id)
+            rowViews.removeValue(forKey: id)
+        }
+        for section in sections {
+            addSection(section, previous: previousSections[section.id])
+        }
+        for (index, section) in sections.enumerated() {
+            guard let card = sectionCards[section.id], stack.arrangedSubviews[index] !== card else { continue }
+            stack.removeArrangedSubview(card)
+            stack.insertArrangedSubview(card, at: index)
+        }
+        updateCorgiMood()
+        if layoutChanged { resize() }
+        scroll.contentView.scroll(to: origin)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        updateVisibility()
+    }
+    private func addSection(_ section: SectionView, previous: SectionView? = nil) {
+        let card = sectionCards[section.id] ?? makeCard()
+        sectionCards[section.id] = card
+        let keys = Set(section.rows.map(\.key))
+        let previousRows = Dictionary(uniqueKeysWithValues: (previous?.rows ?? []).map { ($0.key, $0) })
+        for (key, view) in rowViews[section.id] ?? [:] where !keys.contains(key) {
+            if view.hovered { NSCursor.arrow.set() }
+            view.removeFromSuperview()
+        }
         let title = section.stale ? "\(section.label) — stale data" : section.label
-        let titleField = label(title, size: 15, bold: true, secondary: section.stale)
-        titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        titleField.toolTip = title
-        let titleLine = NSStackView(views: [titleField, NSView(), countView(section.counts)])
-        titleLine.orientation = .horizontal
-        titleLine.alignment = .centerY
-        titleLine.spacing = 6
-        if section.id == rendered?.first?.id { titleLine.addArrangedSubview(toggleButton()) }
-        card.addArrangedSubview(titleLine)
-        titleLine.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -24).isActive = true
-
+        let titleLine: NSStackView
+        if let existing = card.arrangedSubviews.first as? NSStackView, !(existing is ClickableRow) {
+            titleLine = existing
+            let titleField = titleLine.arrangedSubviews[0] as! NSTextField
+            titleField.stringValue = title
+            titleField.textColor = section.stale ? .secondaryLabelColor : .labelColor
+            titleField.toolTip = title
+            if previous?.counts != section.counts {
+                titleLine.arrangedSubviews[2].removeFromSuperview()
+                titleLine.insertArrangedSubview(countView(section.counts), at: 2)
+            }
+            let button = titleLine.arrangedSubviews.compactMap { $0 as? PointerButton }.first
+            if section.id == rendered?.first?.id {
+                if button == nil { titleLine.addArrangedSubview(toggleButton()) }
+            } else if let button {
+                if button.hovered && !rowViews.values.contains(where: { $0.values.contains(where: { $0.hovered }) }) {
+                    NSCursor.arrow.set()
+                }
+                button.removeFromSuperview()
+            }
+        } else {
+            let titleField = label(title, size: 15, bold: true, secondary: section.stale)
+            titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            titleField.toolTip = title
+            titleLine = NSStackView(views: [titleField, NSView(), countView(section.counts)])
+            titleLine.orientation = .horizontal
+            titleLine.alignment = .centerY
+            titleLine.spacing = 6
+            if section.id == rendered?.first?.id { titleLine.addArrangedSubview(toggleButton()) }
+            card.insertArrangedSubview(titleLine, at: 0)
+            titleLine.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -24).isActive = true
+        }
+        card.arrangedSubviews.filter { $0 !== titleLine && !($0 is ClickableRow) }.forEach { $0.removeFromSuperview() }
         if let problem = section.problem {
-            card.addArrangedSubview(label(describe(problem), size: 11, secondary: true))
+            card.insertArrangedSubview(label(describe(problem), size: 11, secondary: true), at: 1)
         }
-        for row in section.rows {
-            let view = rowView(row, stale: section.stale)
-            card.addArrangedSubview(view)
-            view.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -24).isActive = true
+        var rows: [AgentKey: ClickableRow] = [:]
+        var orderedViews = card.arrangedSubviews
+        for (index, row) in section.rows.enumerated() {
+            let view: ClickableRow
+            if let existing = rowViews[section.id]?[row.key] {
+                if previous?.stale != section.stale || previousRows[row.key] != row {
+                    updateRow(existing, row: row, stale: section.stale, previous: previousRows[row.key], previousStale: previous?.stale)
+                }
+                existing.onClick = { [weak self] in self?.onSelect?(row) }
+                view = existing
+            } else { view = rowView(row, stale: section.stale) as! ClickableRow }
+            rows[row.key] = view
+            let position = index + (section.problem == nil ? 1 : 2)
+            if view.superview == nil {
+                card.insertArrangedSubview(view, at: position)
+                orderedViews.insert(view, at: position)
+                view.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -24).isActive = true
+            } else if orderedViews[position] !== view {
+                orderedViews.remove(at: orderedViews.firstIndex { $0 === view }!)
+                orderedViews.insert(view, at: position)
+                card.removeArrangedSubview(view)
+                card.insertArrangedSubview(view, at: position)
+            }
         }
+        rowViews[section.id] = rows
     }
 
     /// Counters as colored icons with numbers; words only in the tooltip.
@@ -711,20 +862,50 @@ final class PanelController: NSObject, NSWindowDelegate {
         details.spacing = 2
         line.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
         if let activity = row.activity, activity != row.label {
-            let field = label(activity, size: 12, secondary: true)
-            field.toolTip = activity
-            let activityLine = NSStackView(views: [NSView(), field])
-            activityLine.orientation = .horizontal
-            activityLine.spacing = 6
-            activityLine.views[0].widthAnchor.constraint(equalToConstant: 16).isActive = true
-            details.addArrangedSubview(activityLine)
-            activityLine.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
-            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            addActivity(activity, to: details)
         }
         return details
     }
 
-    private func statusIcon(_ status: DisplayStatus, size: CGFloat, color: NSColor) -> NSImageView {
+    private func addActivity(_ activity: String, to details: ClickableRow) {
+        let field = label(activity, size: 12, secondary: true)
+        field.toolTip = activity
+        let line = NSStackView(views: [NSView(), field])
+        line.orientation = .horizontal
+        line.spacing = 6
+        line.views[0].widthAnchor.constraint(equalToConstant: 16).isActive = true
+        details.addArrangedSubview(line)
+        line.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
+    private func updateRow(_ details: ClickableRow, row: RowView, stale: Bool, previous: RowView?, previousStale: Bool?) {
+        let line = details.arrangedSubviews[0] as! NSStackView
+        let icon = line.arrangedSubviews[0] as! NSImageView
+        let name = line.arrangedSubviews[1] as! NSTextField
+        let place = line.arrangedSubviews[2] as! NSTextField
+        if previous?.status != row.status { icon.image = statusImage(row.status, size: 14) }
+        if previousStale != stale || previous?.status != row.status {
+            icon.contentTintColor = stale ? .secondaryLabelColor : statusColor(row.status)
+        }
+        if previous?.label != row.label { name.stringValue = row.label }
+        if previousStale != stale { name.textColor = stale ? .secondaryLabelColor : .labelColor }
+        if previous?.place != row.place { place.stringValue = row.place ?? "—" }
+        if previous?.label != row.label || previous?.place != row.place || previous?.status != row.status {
+            details.toolTip = "\(row.label) · \(row.place ?? "—") — \(statusName(row.status)). Click to open."
+        }
+        let activity = row.activity.flatMap { $0 == row.label ? nil : $0 }
+        if details.arrangedSubviews.count > 1 {
+            let activityLine = details.arrangedSubviews[1] as! NSStackView
+            if let activity {
+                let field = activityLine.arrangedSubviews[1] as! NSTextField
+                if field.stringValue != activity { field.stringValue = activity }
+                field.toolTip = activity
+            } else { activityLine.removeFromSuperview() }
+        } else if let activity { addActivity(activity, to: details) }
+    }
+
+    private func statusImage(_ status: DisplayStatus, size: CGFloat) -> NSImage? {
         let symbol: String
         switch status {
         case .working: symbol = "circle.fill"
@@ -733,9 +914,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .idle: symbol = "moon.fill"
         case .unknown: symbol = "questionmark.circle"
         }
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: statusName(status))?
+        return NSImage(systemSymbolName: symbol, accessibilityDescription: statusName(status))?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size, weight: .regular))
+    }
+
+    private func statusIcon(_ status: DisplayStatus, size: CGFloat, color: NSColor) -> NSImageView {
+        let icon = NSImageView()
+        icon.image = statusImage(status, size: size)
         icon.contentTintColor = color
         icon.widthAnchor.constraint(equalToConstant: size + 2).isActive = true
         return icon
@@ -811,6 +996,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let frame = PanelGeometry.anchoredFrame(size: NSSize(width: contentWidth, height: max(height, 40)),
                                                 of: panel.frame, direction: state.direction)
         panel.setFrame(clamped(frame, to: screen), display: true)
+        if state.autoHide && panel.isVisible { DispatchQueue.main.async { [weak self] in self?.updateHover() } }
     }
 
     private func updateMascotSize(for visible: NSRect) -> Bool {

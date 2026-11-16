@@ -47,6 +47,167 @@ struct OverlayLayoutCheck {
             return panel.convertToScreen(dog.convert(dog.bounds, to: nil))
         }
         var store = Store(sources: [.local(executable: "/fake")])
+        func rows(in view: NSView) -> [NSView] {
+            (String(describing: type(of: view)) == "ClickableRow" ? [view] : []) + view.subviews.flatMap { rows(in: $0) }
+        }
+        func renderRows(_ values: [[String: Any]], now: UInt64 = seconds(1)) throws {
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["terminals": values]])
+            store.succeed("local", generation: store.begin("local"), agents: try AgentListParser.parse(data), now: seconds(1))
+            controller.render(store.view(now: now))
+        }
+        func agent(_ address: String, _ status: String, _ title: String) -> [String: Any] {
+            ["address": address, "state": "live", "reported": true, "status": ["state": status], "title": title]
+        }
+        let hiddenChildren = Mirror(reflecting: controller).children
+        require((hiddenChildren.first { $0.label == "hoverMonitors" }!.value as! [Any]).isEmpty, "hidden auto-hide installs no mouse monitors")
+        require((hiddenChildren.first { $0.label == "hoverTimer" }!.value as? Timer) == nil, "hidden auto-hide has no grace timer")
+        require((hiddenChildren.first { $0.label == "animationTimer" }!.value as? Timer) == nil, "hidden auto-hide has no animation timer")
+        controller.setAutoHide(false)
+        try renderRows([agent("one", "working", "first"), agent("two", "idle", "second")])
+        let originalRows = rows(in: root)
+        let originalRow = originalRows[0] as! NSStackView
+        let originalLine = originalRow.arrangedSubviews[0] as! NSStackView
+        let originalIcon = originalLine.arrangedSubviews[0] as! NSImageView
+        let originalName = originalLine.arrangedSubviews[1] as! NSTextField
+        let originalPlace = originalLine.arrangedSubviews[2] as! NSTextField
+        let originalActivityLine = originalRow.arrangedSubviews[1] as! NSStackView
+        let originalActivity = originalActivityLine.arrangedSubviews[1] as! NSTextField
+        let card = originalRows[0].superview!
+        let header = (card as! NSStackView).arrangedSubviews[0] as! NSStackView
+        let toggle = header.arrangedSubviews.compactMap { $0 as? NSButton }.first!
+        let entered = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0,
+                                             windowNumber: panel.windowNumber, context: nil, eventNumber: 0,
+                                             trackingNumber: 0, userData: nil)!
+        toggle.mouseEntered(with: entered)
+        try renderRows([agent("one", "working", "changed title"), agent("two", "idle", "second")])
+        require(originalRow.arrangedSubviews[0] === originalLine && originalRow.arrangedSubviews[1] === originalActivityLine
+                && originalActivityLine.arrangedSubviews[1] === originalActivity && originalActivity.stringValue == "changed title",
+                "activity text refresh retains row children and updates content")
+        require((card as! NSStackView).arrangedSubviews[0] === header && header.arrangedSubviews.contains { $0 === toggle },
+                "row-only refresh retains hovered header control")
+        require(toggle.contentTintColor == .labelColor && NSCursor.current == .pointingHand,
+                "hovered header keeps its highlight and hand cursor across refresh")
+        let exited = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
+                                            windowNumber: panel.windowNumber, context: nil, eventNumber: 0,
+                                            trackingNumber: 0, userData: nil)!
+        toggle.mouseExited(with: exited)
+        try renderRows([agent("one", "done", "updated"), agent("two", "idle", "second"), agent("three", "working", "third")])
+        require(header.arrangedSubviews.contains { $0 === toggle }, "count changes retain header control")
+        require(originalRow.arrangedSubviews[0] === originalLine && originalLine.arrangedSubviews[0] === originalIcon
+                && originalLine.arrangedSubviews[1] === originalName && originalLine.arrangedSubviews[2] === originalPlace
+                && originalRow.arrangedSubviews[1] === originalActivityLine && originalActivity.stringValue == "updated"
+                && originalIcon.contentTintColor == .systemGreen,
+                "status and text updates retain row children and update icon and activity")
+        let changedRows = rows(in: root)
+        require(changedRows.contains { $0 === originalRows[0] } && changedRows.contains { $0 === originalRows[1] }, "rows retain identity after updates and reorder")
+        require(changedRows.contains { $0.superview === card }, "section card retains identity")
+        var selected: RowView?
+        controller.onSelect = { selected = $0 }
+        root.layoutSubtreeIfNeeded()
+        let row = originalRows[0]
+        let point = row.convert(NSPoint(x: row.bounds.midX, y: row.bounds.midY), to: nil)
+        let click = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0,
+                                       windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+        row.mouseUp(with: click)
+        require(selected?.activity == "updated" && selected?.status == .done, "click uses updated row payload")
+        controller.render(store.view(now: seconds(50)))
+        require(rows(in: root).contains { $0 === row }, "stale transition retains row identity")
+        require(row.toolTip?.contains("done") == true, "stale transition preserves row status")
+        require(originalIcon.contentTintColor == .secondaryLabelColor && originalName.textColor == .secondaryLabelColor,
+                "stale transition updates existing icon and label colors")
+        try renderRows([agent("one", "done", "updated"), agent("two", "idle", "second"), agent("three", "working", "third")])
+        require(originalRows[0].toolTip?.contains("done") == true, "updated row displays current status")
+        require(originalIcon.contentTintColor == .systemGreen && originalName.textColor == .labelColor,
+                "fresh transition restores existing icon and label colors")
+        let panelHeightWithActivity = panel.frame.height
+        originalRow.mouseEntered(with: entered)
+        let rowHighlight = originalRow.layer!.sublayers!.first!
+        try renderRows([agent("one", "done", "one"), agent("two", "idle", "second"), agent("three", "working", "third")])
+        require(originalRow.arrangedSubviews.count == 1 && originalRow.arrangedSubviews[0] === originalLine,
+                "activity equal to label removes only activity line")
+        let expandedStack = card.superview as! NSStackView
+        let heightWithoutActivity = min(expandedStack.fittingSize.height + dog.bounds.height + 4,
+                                        panel.screen!.visibleFrame.height * 0.4).rounded(.up)
+        require(panel.frame.height == max(heightWithoutActivity, 40), "removing activity resizes the panel to its content")
+        root.layoutSubtreeIfNeeded()
+        require(rowHighlight.frame == originalRow.bounds.insetBy(dx: -6, dy: -2),
+                "hover highlight follows the shorter row after activity removal")
+        try renderRows([agent("one", "done", "restored"), agent("two", "idle", "second"), agent("three", "working", "third")])
+        require(originalRow.arrangedSubviews.count == 2 && originalRow.arrangedSubviews[0] === originalLine
+                && ((originalRow.arrangedSubviews[1] as! NSStackView).arrangedSubviews[1] as! NSTextField).stringValue == "restored",
+                "new activity adds only activity line")
+        require(panel.frame.height == panelHeightWithActivity, "restoring activity restores the panel height")
+        root.layoutSubtreeIfNeeded()
+        require(rowHighlight.frame == originalRow.bounds.insetBy(dx: -6, dy: -2),
+                "hover highlight follows the taller row after activity restoration")
+        originalRow.mouseExited(with: exited)
+        var renamed = agent("one", "done", "restored")
+        renamed["status"] = ["state": "done", "app": "Renamed"]
+        renamed["cwd"] = "/tmp/place"
+        try renderRows([renamed, agent("two", "idle", "second"), agent("three", "working", "third")])
+        require(originalLine.arrangedSubviews[1] === originalName && originalLine.arrangedSubviews[2] === originalPlace
+                && originalName.stringValue == "Renamed" && originalPlace.stringValue == "place",
+                "name and place update in their existing fields")
+        root.layoutSubtreeIfNeeded()
+        let updatedPoint = row.convert(NSPoint(x: row.bounds.midX, y: row.bounds.midY), to: nil)
+        let updatedClick = NSEvent.mouseEvent(with: .leftMouseUp, location: updatedPoint, modifierFlags: [], timestamp: 0,
+                                              windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+        row.mouseUp(with: updatedClick)
+        require(selected?.label == "Renamed" && selected?.place == "place" && selected?.activity == "restored",
+                "click uses latest renamed row payload")
+        try renderRows([agent("one", "done", "updated")])
+        require(rows(in: root).count == 1 && rows(in: root)[0] === originalRows[0], "row removal keeps remaining identity")
+        do {
+            var twoSources = Store(sources: [.local(executable: "/fake"),
+                SourceConfig(id: "other", label: "Other", command: [], interval: 2, staleAfter: seconds(45))])
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["terminals": [agent("shared", "working", "task")]]])
+            let records = try AgentListParser.parse(data)
+            for id in ["local", "other"] {
+                twoSources.succeed(id, generation: twoSources.begin(id), agents: records, now: seconds(1))
+            }
+            let sections = twoSources.view(now: seconds(1))
+            controller.render(sections)
+            let stack = Mirror(reflecting: controller).children.first { $0.label == "stack" }!.value as! NSStackView
+            func toggleInFirstCard() -> NSButton {
+                let card = stack.arrangedSubviews[0] as! NSStackView
+                let header = card.arrangedSubviews[0] as! NSStackView
+                return header.arrangedSubviews.compactMap { $0 as? NSButton }.first!
+            }
+            let firstToggle = toggleInFirstCard()
+            firstToggle.mouseEntered(with: entered)
+            let otherRow = (stack.arrangedSubviews[1] as! NSStackView).arrangedSubviews.first { String(describing: type(of: $0)) == "ClickableRow" }!
+            otherRow.mouseEntered(with: entered)
+            controller.render(Array(sections.reversed()))
+            require(NSCursor.current == .pointingHand, "removing hovered header does not reset an unchanged hovered row")
+            otherRow.mouseExited(with: exited)
+            let movedToggle = toggleInFirstCard()
+            movedToggle.mouseEntered(with: entered)
+            controller.render([sections[0]])
+            require(NSCursor.current == .arrow, "removing a hovered section clears its hand cursor")
+        }
+        let many = (0..<40).map { agent("scroll-\($0)", "working", "before") }
+        try renderRows(many)
+        root.layoutSubtreeIfNeeded()
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 100))
+        let scrollOrigin = scroll.contentView.bounds.origin
+        var changed = many
+        changed[0] = agent("scroll-0", "working", "after")
+        try renderRows(changed)
+        root.layoutSubtreeIfNeeded()
+        require(scrollOrigin.y > 0 && scroll.contentView.bounds.origin == scrollOrigin, "data update preserves scroll position")
+        let largeList = (0..<1024).map { agent("large-\($0)", "working", "before") }
+        try renderRows(largeList)
+        root.layoutSubtreeIfNeeded()
+        let largeRows = rows(in: root)
+        var largeUpdate = largeList
+        largeUpdate[512] = agent("large-512", "working", "after")
+        let start = ProcessInfo.processInfo.systemUptime
+        try renderRows(largeUpdate)
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        let refreshedRows = rows(in: root)
+        require(largeRows.count == 1024 && refreshedRows.count == 1024 && zip(largeRows, refreshedRows).allSatisfy { $0 === $1 },
+                "large-list refresh preserves all row identities")
+        print("Large-list 1024-row refresh: \(String(format: "%.3f", elapsed))s (informational)")
         for direction in PanelDirection.allCases {
             controller.setDirection(direction)
             for style in [NSScroller.Style.legacy, .overlay] {
@@ -154,7 +315,7 @@ struct OverlayLayoutCheck {
                         "idle-only auto-hide shows just corgi; active counters restore cloud")
                 require(!panel.isVisible, "idle layout checks never display a window")
             }
-            controller.render(store.view(now: seconds(20)))
+            controller.render(store.view(now: seconds(50)))
             root.layoutSubtreeIfNeeded()
             require(cloud(in: root) != nil, "stale data stays distinguishable from no active agents")
         }

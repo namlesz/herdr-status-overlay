@@ -7,6 +7,7 @@ public enum CoreEventError: Error { case malformed, tooManyTerminals, duplicate 
 public struct CoreEventReducer {
     public private(set) var sequence: UInt64
     private var terminals: [String: [String: Any]] = [:]
+    private var encodedSizes: [String: Result<Int, Error>] = [:]
     private var addresses: [String] = []
 
     public init(snapshot: [String: Any]) throws {
@@ -17,16 +18,18 @@ public struct CoreEventReducer {
         for terminal in list {
             guard let address = terminal["address"] as? String, Text.isIdentifier(address) else { throw CoreEventError.malformed }
             guard terminals[address] == nil else { throw CoreEventError.duplicate }
-            terminals[address] = Self.retained(terminal)
+            store(terminal, address: address)
             addresses.append(address)
         }
     }
 
     public func currentRecords() throws -> [AgentRecord] {
-        // Only explicit finished history is skipped here, so the parser still validates every other state value.
-        let list = addresses.compactMap { terminals[$0] }.filter { $0["state"] as? String != "finished" }
-        let data = try JSONSerialization.data(withJSONObject: ["result": ["terminals": list]])
-        return try AgentListParser.parse(data)
+        // Only explicit finished history is skipped; all other states are validated.
+        let active = addresses.filter { terminals[$0]?["state"] as? String != "finished" }
+        var bytes = #"{"result":{"terminals":[]}}"#.utf8.count + max(0, active.count - 1)
+        for address in active { bytes += try encodedSizes[address]!.get() }
+        guard bytes <= AgentListParser.maxBytes else { throw ParseError.oversized }
+        return try AgentListParser.parseTerminals(active.compactMap { terminals[$0] })
     }
 
     /// nil means no displayed fields changed, not a new snapshot.
@@ -55,7 +58,7 @@ public struct CoreEventReducer {
         guard let data = params["data"] as? [String: Any] else { throw CoreEventError.malformed }
         switch type {
         case "created", "restarted": try upsert(data, address: address)
-        case "removed": terminals.removeValue(forKey: address); addresses.removeAll { $0 == address }
+        case "removed": terminals.removeValue(forKey: address); encodedSizes.removeValue(forKey: address); addresses.removeAll { $0 == address }
         case "status":
             guard data["status"] != nil, data["records"] is [String: Any],
                   let reported = data["reported"] as? NSNumber,
@@ -86,7 +89,7 @@ public struct CoreEventReducer {
     private mutating func patch(_ address: String, _ update: (inout [String: Any]) -> Void) throws {
         guard var terminal = terminals[address] else { throw CoreEventError.malformed }
         update(&terminal)
-        terminals[address] = Self.retained(terminal)
+        store(terminal, address: address)
     }
 
     private mutating func upsert(_ terminal: [String: Any], address: String) throws {
@@ -95,9 +98,26 @@ public struct CoreEventReducer {
             guard terminals.count < AgentListParser.maxAgents else { throw CoreEventError.tooManyTerminals }
             addresses.append(address)
         }
-        terminals[address] = Self.retained(terminal)
+        store(terminal, address: address)
     }
 
+    private mutating func store(_ terminal: [String: Any], address: String) {
+        let value = Self.freeze(Self.retained(terminal)) as! [String: Any]
+        terminals[address] = value
+        if value["state"] as? String == "finished" {
+            encodedSizes.removeValue(forKey: address)
+        } else {
+            encodedSizes[address] = Result { try JSONSerialization.data(withJSONObject: value).count }
+        }
+    }
+
+    // Snapshot nested Foundation containers and strings before caching their encoded size.
+    private static func freeze(_ value: Any) -> Any {
+        if let string = value as? String { return string }
+        if let dictionary = value as? [String: Any] { return dictionary.mapValues { freeze($0) } }
+        if let array = value as? [Any] { return array.map { freeze($0) } }
+        return value
+    }
     /// Finished history keeps only its address and state: later metadata and removal events still apply, payloads do not stay.
     private static func retained(_ terminal: [String: Any]) -> [String: Any] {
         guard terminal["state"] as? String == "finished", let address = terminal["address"] else { return terminal }

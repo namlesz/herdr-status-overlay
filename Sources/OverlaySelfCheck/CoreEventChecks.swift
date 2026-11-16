@@ -128,6 +128,82 @@ func checkCoreEvents() {
         expect(try reducer.currentRecords().map(\.key.paneID) == ["t1"], "stub metadata, restart and late lost leave history hidden")
     } catch { check(false, "finished history retention: \(error)") }
 
+    do {
+        var item = terminal("budget")
+        let envelope = #"{"result":{"terminals":[]}}"#.utf8.count
+        let base = try JSONSerialization.data(withJSONObject: item).count
+        item["title"] = String(repeating: "x", count: AgentListParser.maxBytes - envelope - base + 4)
+        let bytes = try JSONSerialization.data(withJSONObject: ["result": ["terminals": [item]]])
+        expect(bytes.count == AgentListParser.maxBytes, "budget fixture is exactly 1 MiB")
+        var reducer = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [item]])
+        expect(try AgentListParser.parse(bytes).first?.activity == reducer.currentRecords().first?.activity, "exact budget parser and reducer agree")
+        _ = try reducer.apply(event(2, "size", "budget", ["cols": 80, "rows": 24]))
+        do { _ = try reducer.currentRecords(); check(false, "metadata over budget rejected") }
+        catch ParseError.oversized { check(true, "metadata over budget rejected") }
+        _ = try reducer.apply(event(3, "size", "budget", [:]))
+        expect(try reducer.currentRecords().count == 1, "metadata removal restores budget")
+        do { _ = try reducer.apply(event(4, "title", "budget", ["title": (item["title"] as! String) + "x"])); check(false, "one byte over budget rejected") }
+        catch ParseError.oversized { check(true, "one byte over budget rejected") }
+        _ = try reducer.apply(event(5, "finished", "budget", [:]))
+        expect(try reducer.currentRecords().isEmpty, "finished stub releases budget")
+    } catch { check(false, "snapshot byte budget: \(error)") }
+
+    for (field, value) in [("reported", 1 as Any), ("status", "bad" as Any), ("title", 7 as Any)] {
+        var item = terminal("invalid")
+        item[field] = value
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["terminals": [item]]])
+            let parserError: ParseError?
+            do { _ = try AgentListParser.parse(data); parserError = nil } catch { parserError = error as? ParseError }
+            let reducerError: ParseError?
+            do { _ = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [item]]).currentRecords(); reducerError = nil }
+            catch { reducerError = error as? ParseError }
+            expect(parserError == .invalidField(field) && reducerError == parserError, "parser and reducer reject invalid \(field)")
+        } catch { check(false, "invalid \(field) fixture: \(error)") }
+    }
+
+    do {
+        let title = NSMutableString(string: "snapshot title")
+        let status = NSMutableDictionary(dictionary: ["state": "working"])
+        let metadata = NSMutableArray(array: ["small"])
+        var item = terminal("mutable")
+        item["title"] = title; item["status"] = status; item["metadata"] = metadata
+        var reducer = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [item]])
+        title.append(String(repeating: "x", count: AgentListParser.maxBytes))
+        status["state"] = "blocked"
+        metadata.add(String(repeating: "x", count: AgentListParser.maxBytes))
+        for _ in 0..<2 {
+            let record = try reducer.currentRecords().first
+            expect(record?.activity == "snapshot title" && record?.status == .working, "snapshot freezes nested mutable Foundation values")
+        }
+        let patchTitle = NSMutableString(string: "patched")
+        _ = try reducer.apply(event(2, "title", "mutable", ["title": patchTitle]))
+        patchTitle.append(String(repeating: "x", count: AgentListParser.maxBytes))
+        expect(try reducer.currentRecords().first?.activity == "patched", "title patch freezes mutable string")
+        let labels = NSMutableDictionary(dictionary: ["herdr.seen": "1"])
+        let nested = NSMutableArray(array: ["small"])
+        labels["extra"] = nested
+        _ = try reducer.apply(event(3, "labels", "mutable", ["labels": labels]))
+        nested.add(String(repeating: "x", count: AgentListParser.maxBytes))
+        labels["herdr.seen"] = "2"
+        expect(try reducer.currentRecords().first?.seenTurn == 1, "labels patch freezes mutable dictionary and array")
+        let replacementTitle = NSMutableString(string: "restarted")
+        let replacementStatus = NSMutableDictionary(dictionary: ["state": "idle"])
+        let replacementArray = NSMutableArray(array: ["small"])
+        var replacement = terminal("mutable")
+        replacement["title"] = replacementTitle; replacement["status"] = replacementStatus; replacement["metadata"] = replacementArray
+        _ = try reducer.apply(event(4, "restarted", "mutable", replacement))
+        replacementTitle.append(String(repeating: "x", count: AgentListParser.maxBytes))
+        replacementStatus["state"] = "blocked"
+        replacementArray.add(String(repeating: "x", count: AgentListParser.maxBytes))
+        for _ in 0..<2 {
+            let record = try reducer.currentRecords().first
+            expect(record?.activity == "restarted" && record?.status == .idle, "upsert freezes nested mutable Foundation values")
+        }
+        _ = try reducer.apply(event(5, "title", "mutable", ["title": "still within budget"]))
+        expect(try reducer.currentRecords().first?.activity == "still within budget", "later patch re-encodes frozen metadata within budget")
+    } catch { check(false, "mutable input isolation: \(error)") }
+
     // A malformed lifecycle state is a parser error, not an empty healthy snapshot: only explicit "finished" is skipped.
     for state in [42 as Any, "bogus", NSNull()] {
         var malformed = terminal("t2"); malformed["state"] = state

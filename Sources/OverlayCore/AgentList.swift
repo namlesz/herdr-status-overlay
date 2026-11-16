@@ -36,6 +36,10 @@ public enum AgentListParser {
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = root["result"] as? [String: Any],
               let terminals = result["terminals"] as? [[String: Any]] else { throw ParseError.malformed }
+        return try parseTerminals(terminals)
+    }
+
+    static func parseTerminals(_ terminals: [[String: Any]]) throws -> [AgentRecord] {
         guard terminals.count <= maxAgents else { throw ParseError.tooManyAgents }
         var seen = Set<String>()
         return try terminals.compactMap { terminal in
