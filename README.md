@@ -28,6 +28,7 @@ The supervisor watches for an already-running core, retries failed startup attem
 
 Each live, reported agent/child with a status has a row; unreported shells, reported terminals without status, and historical finished terminals are omitted. Local and remote terminals are included in the same aggregated snapshot and retain their stable address. Unknown future status strings map safely to unknown; `error` and `blocked` use the existing STOP appearance. Completion follows the core's official `herdr.seen` label: when both unsigned `turn` and `herdr.seen` are valid, `turn > seen` is done and `turn <= seen` is idle. Missing or malformed labels are never treated as read; raw `done` remains pending until a valid receipt or working status arrives. Working and blocked override read receipts, while turn-only updates never celebrate. Labels are read-only and status celebrations occur only on a continuous fresh transition to raw `done`.
 
+When Auto-hide is collapsed, a small translucent badge beside the dog shows counts for working, blocked, and done agents. It disappears when fresh sources have no active statuses; unavailable data still has an indicator.
 The existing floating panel, dog animations, pair activities, placement, auto-hide, scale, and visibility settings remain. Clicking a row runs the bounded `herdr-app do agent.focus --terminal <address>` command and activates the actual Herdr GUI bundle (`dev.herdr.app`), not a terminal emulator. Focus failures beep.
 
 ## Development checks

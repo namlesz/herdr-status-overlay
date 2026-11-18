@@ -12,9 +12,8 @@ struct OverlayLayoutCheck {
         guard condition else { print("FAIL: \(message)"); exit(1) }
     }
 
-    static func cloud(in view: NSView) -> NSView? {
-        if String(describing: type(of: view)) == "ThoughtBubbleView" { return view }
-        return view.subviews.lazy.compactMap { cloud(in: $0) }.first
+    static func badge(in controller: PanelController) -> NSStackView? {
+        Mirror(reflecting: controller).children.first { $0.label == "compactBadge" }!.value as? NSStackView
     }
 
     static func main() throws {
@@ -231,13 +230,14 @@ struct OverlayLayoutCheck {
                         panel.setFrameOrigin(point)
                         controller.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
                         root.layoutSubtreeIfNeeded()
-                        let bubble = cloud(in: root)!
-                        let document = scroll.documentView!
-                        require(abs(document.frame.width - scroll.contentView.bounds.width) < 0.5,
-                                "stale scrollbar gutter clips cloud: document \(document.frame.width), clip \(scroll.contentView.bounds.width)")
-                        let frame = document.convert(bubble.bounds, from: bubble)
-                        require(document.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame),
-                                "cloud must fit document after expansion, collapse and edge dragging")
+                        let counters = badge(in: controller)!
+                        require(!scroll.hasVerticalScroller, "collapsed badge has no scrollbar")
+                        let frame = root.convert(counters.bounds, from: counters)
+                        require(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame),
+                                "badge must fit panel after expansion, collapse and edge dragging")
+                        require(counters.superview === root && counters.bounds.height == 26
+                                && counters.layer?.cornerRadius == 13,
+                                "badge is a compact capsule beside the dog, not a scrolling card")
                         require(!panel.isVisible, "layout test must never display the overlay")
                     }
                 }
@@ -256,10 +256,10 @@ struct OverlayLayoutCheck {
             controller.render(store.view(now: seconds(1)))
             let after = dogFrame()
             require(before == after, "counter changes must not move corgi")
-            widths.append(cloud(in: root)!.bounds.width)
+            widths.append(badge(in: controller)!.bounds.width)
         }
         require(widths[0] < widths[1] && widths[1] < widths[2] && widths[0] == widths[3],
-                "cloud grows and shrinks for one/two/three counters: \(widths)")
+                "badge grows and shrinks for one/two/three counters: \(widths)")
         for autoHide in [true, false] {
             controller.setAutoHide(autoHide)
             panel.setFrameOrigin(NSPoint(x: visible.midX - 210, y: visible.midY - 100))
@@ -269,15 +269,15 @@ struct OverlayLayoutCheck {
                 controller.setDirection(direction)
                 require(dogFrame() == before, "direction changes keep mascot fixed away from screen edges")
                 if autoHide {
-                    let bubble = cloud(in: root)!
-                    let bubbleFrame = panel.convertToScreen(bubble.convert(bubble.bounds, to: nil))
+                    let counters = badge(in: controller)!
+                    let badgeFrame = panel.convertToScreen(counters.convert(counters.bounds, to: nil))
                     let dog = dogFrame()
-                    require(direction.extendsLeft ? bubbleFrame.midX < dog.midX : bubbleFrame.midX > dog.midX,
-                            "cloud center must be on the selected horizontal side of corgi: \(direction)")
-                    require(abs(bubbleFrame.midX - dog.midX) <= bubbleFrame.width / 2,
-                            "cloud stays close to the mascot center")
-                    require(direction.extendsUp ? bubbleFrame.minY >= dog.maxY : bubbleFrame.maxY <= dog.minY,
-                            "cloud must be on the selected vertical side of corgi: \(direction)")
+                    require(direction.extendsLeft ? badgeFrame.midX < dog.midX : badgeFrame.midX > dog.midX,
+                            "badge follows the selected horizontal side: \(direction)")
+                    let verticalOffset = direction.extendsUp ? badgeFrame.maxY - dog.maxY : badgeFrame.minY - dog.minY
+                    require(abs(verticalOffset) < 0.5, "badge aligns with the selected corner: \(direction)")
+                    let gap = direction.extendsLeft ? dog.minX - badgeFrame.maxX : badgeFrame.minX - dog.maxX
+                    require(abs(gap - 6) < 0.5, "badge stays outside the entire animation, with a 6 pt gap")
                 }
                 controller.saveState()
                 let restored = PanelController(stateFile: url)
@@ -310,14 +310,14 @@ struct OverlayLayoutCheck {
                 store.succeed("local", generation: store.begin("local"),
                               agents: try AgentListParser.parse(data), now: seconds(1))
                 controller.render(store.view(now: seconds(1)))
-                require(dogFrame() == before, "hiding and restoring cloud keeps mascot fixed")
-                require((cloud(in: root) == nil) == (status == "idle"),
-                        "idle-only auto-hide shows just corgi; active counters restore cloud")
+                require(dogFrame() == before, "hiding and restoring badge keeps mascot fixed")
+                require((badge(in: controller) == nil) == (status == "idle"),
+                        "idle-only auto-hide shows just corgi; active counters restore badge")
                 require(!panel.isVisible, "idle layout checks never display a window")
             }
             controller.render(store.view(now: seconds(50)))
             root.layoutSubtreeIfNeeded()
-            require(cloud(in: root) != nil, "stale data stays distinguishable from no active agents")
+            require(badge(in: controller) != nil, "stale data stays distinguishable from no active agents")
         }
         // Row-only changes must keep compact views alive, but still reach the expanded list and mascot.
         let now = MonotonicClock.now()
@@ -344,12 +344,12 @@ struct OverlayLayoutCheck {
             return stack?.arrangedSubviews.first?.frame.width
         }
         try renderCompact(title: "Before")
-        let unchangedCloud = cloud(in: root)!
+        let unchangedBadge = badge(in: controller)!
         try renderCompact(title: "Latest activity")
-        require(cloud(in: root) === unchangedCloud, "title-only changes must not rebuild the cloud")
+        require(badge(in: controller) === unchangedBadge, "title-only changes must not rebuild the badge")
         try renderCompact(title: "Latest activity", status: "working", publish: false)
         try renderCompact(title: "Latest activity")
-        require(cloud(in: root) === unchangedCloud, "new completion with equal counters keeps the cloud")
+        require(badge(in: controller) === unchangedBadge, "new completion with equal counters keeps the badge")
         let mood = Mirror(reflecting: controller).children.first { $0.label == "mood" }!.value as! MascotMood?
         require(mood == .celebrating, "equal counters must still deliver new completion events to the mascot")
         controller.setAutoHide(false)
@@ -363,7 +363,7 @@ struct OverlayLayoutCheck {
         require(containsText("Manual latest activity", in: root), "manual expansion uses latest row data")
         controller.setAutoHide(true)
         controller.render(compactStore.view(now: now + seconds(7)))
-        require(cloud(in: root) !== unchangedCloud, "freshness changes must rebuild compact content")
+        require(badge(in: controller) !== unchangedBadge, "freshness changes must rebuild compact content")
         require(!panel.isVisible, "optimization checks never display a window")
         let timers = Mirror(reflecting: controller).children
         require(timers.first { $0.label == "animationTimer" }!.value as! Timer? == nil,
@@ -392,7 +392,7 @@ struct OverlayLayoutCheck {
                     let anchor = dogAnchor(dogFrame(), direction)
                     let originalTexts = textValues(in: root)
                     let originalCardWidth = cardWidth()
-                    let originalCloudWidth = autoHide ? cloud(in: root)?.bounds.width : nil
+                    let originalBadgeWidth = autoHide ? badge(in: controller)?.bounds.width : nil
                     for scale in [50, 100, 150, 200, 300] {
                         controller.setDogScalePercent(scale)
                         let frame = dogFrame()
@@ -404,21 +404,21 @@ struct OverlayLayoutCheck {
                         require(abs(afterAnchor.x - anchor.x) < 0.5 && abs(afterAnchor.y - anchor.y) < 0.5,
                                 "dog scale preserves its anchor in \(direction)")
                         require(textValues(in: root) == originalTexts,
-                                "dog scaling leaves cloud, text and card labels unchanged")
-                        require(cardWidth().map { abs($0 - (originalCardWidth ?? $0)) < 0.5 } == true,
+                                "dog scaling leaves badge, text and card labels unchanged")
+                        require(cardWidth() == originalCardWidth,
                                 "dog scaling does not resize cards")
-                        if let originalCloudWidth {
-                            require(abs((cloud(in: root)?.bounds.width ?? -1) - originalCloudWidth) < 0.5,
-                                    "dog scaling does not resize the counter cloud")
+                        if let originalBadgeWidth {
+                            require(abs((badge(in: controller)?.bounds.width ?? -1) - originalBadgeWidth) < 0.5,
+                                    "dog scaling does not resize the counter badge")
                         }
                         if scale == 300 {
                             if !autoHide && !minimized {
                                 require(scroll.contentView.bounds.height >= 80,
                                         "expanded list keeps an 80 pt scroll viewport at 300 percent")
                             }
-                            if autoHide, let bubble = cloud(in: root) {
-                                let bubbleFrame = bubble.convert(bubble.bounds, to: scroll.contentView)
-                                require(scroll.contentView.bounds.insetBy(dx: -0.5, dy: -0.5).contains(bubbleFrame),
+                            if autoHide, let counters = badge(in: controller) {
+                                let badgeFrame = counters.convert(counters.bounds, to: root)
+                                require(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(badgeFrame),
                                         "compact counters stay visible beside the 300 percent dog")
                             }
                         }
@@ -442,6 +442,6 @@ struct OverlayLayoutCheck {
         controller.setDogScalePercent(301)
         require(controller.dogScalePercent == 200, "out-of-range programmatic scale leaves preference unchanged")
         controller.setDogScalePercent(100)
-        print("Overlay AppKit layout checks passed (four directions, dynamic cloud, restoration, both scrollbar styles and edge dragging).")
+        print("Overlay AppKit layout checks passed (four directions, dynamic badge, restoration, both scrollbar styles and edge dragging).")
     }
 }

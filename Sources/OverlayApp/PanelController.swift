@@ -77,31 +77,6 @@ private final class CorgiView: NSView {
 }
 
 
-private final class ThoughtBubbleView: NSView {
-    private let reduceTransparency: Bool
-    private let direction: PanelDirection
-
-    init(reduceTransparency: Bool, direction: PanelDirection) {
-        self.reduceTransparency = reduceTransparency
-        self.direction = direction
-        super.init(frame: .zero)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
-    override var isOpaque: Bool { false }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        context.setFillColor(NSColor.white.withAlphaComponent(reduceTransparency ? 1 : ThoughtBubble.opacity).cgColor)
-        let transform = CGAffineTransform(a: direction.extendsLeft ? 1 : -1, b: 0, c: 0,
-                                         d: direction.extendsUp ? 1 : -1,
-                                         tx: direction.extendsLeft ? 0 : bounds.width,
-                                         ty: direction.extendsUp ? 0 : bounds.height)
-        context.concatenate(transform)
-        context.addPath(ThoughtBubble.path(in: bounds, tailX: bounds.maxX - 16))
-        context.fillPath()
-    }
-}
 
 private final class CardBackdropView: NSVisualEffectView {
     static let tailHeight: CGFloat = 9
@@ -262,6 +237,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var sectionCards: [String: NSStackView] = [:]
     private var rowViews: [String: [AgentKey: ClickableRow]] = [:]
     private let corgi = CorgiView(frame: NSRect(x: 0, y: 0, width: CorgiView.side, height: CorgiView.side))
+    private var compactBadge: NSStackView?
     private var animationTimer: Timer?
     private var celebrationTimer: Timer?
     private var hover = AutoHideHover()
@@ -425,10 +401,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func rebuildContent() {
         sectionCards.removeAll()
         rowViews.removeAll()
+        compactBadge?.removeFromSuperview()
+        compactBadge = nil
         // Removed rows and buttons never get mouseExited, so drop a hand left over from them.
         NSCursor.arrow.set()
         let sections = rendered ?? []
-        // A collapsed cloud has no scrolling content; legacy scrollers otherwise leave a clipped gutter.
+        // A collapsed badge has no scrolling content.
         scroll.hasVerticalScroller = !(state.autoHide && compact)
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         contentWidth = Self.width
@@ -514,17 +492,13 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func makeCard(fillWidth: Bool = true, speechTail: Bool = false) -> NSStackView {
         let card = NSStackView()
-        let transparentBubble = speechTail && state.autoHide
-        card.appearance = NSAppearance(named: transparentBubble && NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-                                      ? .aqua : .darkAqua)
+        card.appearance = NSAppearance(named: .darkAqua)
         card.orientation = .vertical
         card.alignment = .leading
         card.spacing = 4
-        let padding: CGFloat = transparentBubble ? 20 : 12
-        let tail = transparentBubble ? ThoughtBubble.tailHeight : (speechTail ? CardBackdropView.tailHeight : 0)
-        let verticalPadding: CGFloat = transparentBubble ? 12 : 10
-        card.edgeInsets = NSEdgeInsets(top: verticalPadding + (state.direction.extendsUp ? 0 : tail), left: padding,
-                                       bottom: verticalPadding + (state.direction.extendsUp ? tail : 0), right: padding)
+        let tail = speechTail ? CardBackdropView.tailHeight : 0
+        card.edgeInsets = NSEdgeInsets(top: 10 + (state.direction.extendsUp ? 0 : tail), left: 12,
+                                       bottom: 10 + (state.direction.extendsUp ? tail : 0), right: 12)
         let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         card.wantsLayer = true
         card.layer?.backgroundColor = NSColor.clear.cgColor
@@ -532,9 +506,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         card.layer?.masksToBounds = true
         card.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(card)
-        let backdrop: NSView = transparentBubble
-            ? ThoughtBubbleView(reduceTransparency: reduceTransparency, direction: state.direction)
-            : CardBackdropView(speechTail: speechTail, reduceTransparency: reduceTransparency, direction: state.direction)
+        let backdrop = CardBackdropView(speechTail: speechTail, reduceTransparency: reduceTransparency,
+                                        direction: state.direction)
         backdrop.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(backdrop, positioned: .below, relativeTo: nil)
         NSLayoutConstraint.activate([
@@ -683,34 +656,68 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func addCompactSummary(_ sections: [SectionView]) {
         let counts = SectionView.activeCounts(in: sections)
-        if state.autoHide, counts?.isEmpty == true {
-            addCorgiCorner()
+        addCorgiCorner()
+        let unavailable = sections.filter(\.stale).map(\.label)
+        if state.autoHide {
             contentWidth = mascotSide + 16
+            if counts?.isEmpty != true {
+                addCompactBadge(counts, unavailable: unavailable)
+            }
             return
         }
         let card = makeCard(fillWidth: false, speechTail: true)
-        let counters = countView(counts,
-                                 order: [.working, .blocked, .done], emptyText: "No active agents")
+        let counters = countView(counts, order: [.working, .blocked, .done], emptyText: "No active agents")
         // Measure before attaching to the old panel width; stack fitting sizes can retain that width.
         let counterWidth = counters.fittingSize.width
         let button = toggleButton()
-        let line = NSStackView(views: state.autoHide ? [counters] : [button, counters])
+        let line = NSStackView(views: [button, counters])
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 10
         card.addArrangedSubview(line)
-        let unavailable = sections.filter(\.stale).map(\.label)
         card.toolTip = unavailable.isEmpty ? counters.toolTip
             : "Fresh sources only. Unavailable: " + unavailable.joined(separator: ", ")
-        addCorgiCorner()
-        let padding: CGFloat = state.autoHide ? 40 : 24
-        let controls = state.autoHide ? 0 : button.fittingSize.width + line.spacing
-        let sideInset: CGFloat = state.autoHide ? mascotSide / 2 : 0
-        let bubbleWidth = min(Self.width, ceil(counterWidth + padding + controls))
-        card.widthAnchor.constraint(equalToConstant: bubbleWidth).isActive = true
-        contentWidth = max(mascotSide + 16, bubbleWidth + sideInset)
-        let alignLeft = state.autoHide ? state.direction.extendsLeft : !state.direction.extendsLeft
-        stack.alignment = alignLeft ? .leading : .trailing
+        let width = min(Self.width, ceil(counterWidth + 24 + button.fittingSize.width + line.spacing))
+        card.widthAnchor.constraint(equalToConstant: width).isActive = true
+        contentWidth = max(mascotSide + 16, width)
+        stack.alignment = state.direction.extendsLeft ? .trailing : .leading
+    }
+
+    private func addCompactBadge(_ counts: [DisplayStatus: Int]?, unavailable: [String]) {
+        guard let root = panel.contentView else { return }
+        let counters = countView(counts, order: [.working, .blocked, .done], badgeStyle: true)
+        let badge = NSStackView(views: [counters])
+        let width = ceil(counters.fittingSize.width) + 18
+        let height: CGFloat = 26
+        badge.alignment = .centerY
+        badge.edgeInsets = NSEdgeInsets(top: 0, left: 9, bottom: 0, right: 9)
+        badge.appearance = NSAppearance(named: .darkAqua)
+        badge.wantsLayer = true
+        badge.layer?.cornerRadius = height / 2
+        let opaque = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        badge.layer?.backgroundColor = NSColor(srgbRed: 0.075, green: 0.10, blue: 0.125,
+                                               alpha: opaque ? 1 : 0.71).cgColor
+        let summary = counters.toolTip ?? "Agent status unavailable"
+        badge.toolTip = unavailable.isEmpty ? summary : summary + ". Unavailable: " + unavailable.joined(separator: ", ")
+        badge.setAccessibilityElement(true)
+        badge.setAccessibilityRole(.staticText)
+        badge.setAccessibilityLabel(badge.toolTip)
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(badge, positioned: .above, relativeTo: corgi)
+        compactBadge = badge
+
+        let gap: CGFloat = 6
+        NSLayoutConstraint.activate([
+            badge.widthAnchor.constraint(equalToConstant: width),
+            badge.heightAnchor.constraint(equalToConstant: height),
+            state.direction.extendsLeft
+                ? badge.trailingAnchor.constraint(equalTo: corgi.leadingAnchor, constant: -gap)
+                : badge.leadingAnchor.constraint(equalTo: corgi.trailingAnchor, constant: gap),
+            state.direction.extendsUp
+                ? badge.topAnchor.constraint(equalTo: corgi.topAnchor)
+                : badge.bottomAnchor.constraint(equalTo: corgi.bottomAnchor)
+        ])
+        contentWidth += width + gap
     }
 
     private func updateSections(_ sections: [SectionView], previous: [SectionView]) {
@@ -825,22 +832,28 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// Counters as colored icons with numbers; words only in the tooltip.
     private func countView(_ counts: [DisplayStatus: Int]?,
                            order: [DisplayStatus] = [.working, .blocked, .done, .idle, .unknown],
-                           emptyText: String = "no agents") -> NSView {
-        guard let counts else { return label("—", size: 13, secondary: true) }
+                           emptyText: String = "no agents", badgeStyle: Bool = false) -> NSView {
+        guard let counts else { return label("—", size: badgeStyle ? 12 : 13, secondary: true) }
         var views: [NSView] = []
         var summary: [String] = []
         for status in order {
             guard let count = counts[status], count > 0 else { continue }
-            let number = label("\(count)", size: 13)
-            number.textColor = statusColor(status)
-            let pair = NSStackView(views: [statusIcon(status, size: 12, color: statusColor(status)), number])
-            pair.spacing = 3
+            let color = badgeStyle && status == .working
+                ? NSColor(srgbRed: 0.82, green: 0.73, blue: 0.56, alpha: 1) : statusColor(status)
+            let number = label("\(count)", size: badgeStyle ? 12 : 13)
+            number.textColor = badgeStyle
+                ? NSColor(srgbRed: 0.98, green: 0.95, blue: 0.89, alpha: 1) : color
+            let size: CGFloat = badgeStyle ? (status == .working ? 6 : 9) : 12
+            let icon = statusIcon(status, size: size, color: color, outlinedWorking: badgeStyle)
+            let pair = NSStackView(views: [icon, number])
+            pair.alignment = .centerY
+            pair.spacing = badgeStyle ? 4 : 3
             views.append(pair)
             summary.append("\(count) \(statusName(status))")
         }
         guard !views.isEmpty else { return label(emptyText, size: 13, secondary: true) }
         let counters = NSStackView(views: views)
-        counters.spacing = 10
+        counters.spacing = badgeStyle ? 7 : 10
         counters.toolTip = summary.joined(separator: " · ")
         return counters
     }
@@ -905,10 +918,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         } else if let activity { addActivity(activity, to: details) }
     }
 
-    private func statusImage(_ status: DisplayStatus, size: CGFloat) -> NSImage? {
+    private func statusImage(_ status: DisplayStatus, size: CGFloat, outlinedWorking: Bool = false) -> NSImage? {
         let symbol: String
         switch status {
-        case .working: symbol = "circle.fill"
+        case .working: symbol = outlinedWorking ? "circle" : "circle.fill"
         case .blocked: symbol = "exclamationmark.triangle.fill"
         case .done: symbol = "checkmark.circle.fill"
         case .idle: symbol = "moon.fill"
@@ -918,9 +931,10 @@ final class PanelController: NSObject, NSWindowDelegate {
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size, weight: .regular))
     }
 
-    private func statusIcon(_ status: DisplayStatus, size: CGFloat, color: NSColor) -> NSImageView {
+    private func statusIcon(_ status: DisplayStatus, size: CGFloat, color: NSColor,
+                            outlinedWorking: Bool = false) -> NSImageView {
         let icon = NSImageView()
-        icon.image = statusImage(status, size: size)
+        icon.image = statusImage(status, size: size, outlinedWorking: outlinedWorking)
         icon.contentTintColor = color
         icon.widthAnchor.constraint(equalToConstant: size + 2).isActive = true
         return icon
@@ -969,14 +983,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         field.maximumNumberOfLines = 1
         field.lineBreakMode = .byTruncatingTail
         field.widthAnchor.constraint(lessThanOrEqualToConstant: Self.width - 30).isActive = true
-        if state.autoHide && compact && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
-            let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black
-            shadow.shadowBlurRadius = 2
-            let value = NSMutableAttributedString(attributedString: field.attributedStringValue)
-            value.addAttribute(.shadow, value: shadow, range: NSRange(location: 0, length: value.length))
-            field.attributedStringValue = value
-        }
         return field
     }
 
