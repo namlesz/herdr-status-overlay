@@ -28,13 +28,28 @@ The supervisor watches for an already-running core, retries failed startup attem
 
 Each live, reported agent/child with a status has a row; unreported shells, reported terminals without status, and historical finished terminals are omitted. Local and remote terminals are included in the same aggregated snapshot and retain their stable address. Unknown future status strings map safely to unknown; `error` and `blocked` use the existing STOP appearance. Completion follows the core's official `herdr.seen` label: when both unsigned `turn` and `herdr.seen` are valid, `turn > seen` is done and `turn <= seen` is idle. Missing or malformed labels are never treated as read; raw `done` remains pending until a valid receipt or working status arrives. Working and blocked override read receipts, while turn-only updates never celebrate. Labels are read-only and status celebrations occur only on a continuous fresh transition to raw `done`.
 
-When Auto-hide is collapsed, a small translucent badge beside the dog shows counts for working, blocked, and done agents. It disappears when fresh sources have no active statuses; unavailable data still has an indicator.
+When Auto-hide is collapsed, a small translucent badge beside the dog shows counts for working, blocked, and done agents, plus a separate clock icon and count for running Pi background jobs. It disappears when fresh sources have no active statuses or background jobs; unavailable data still has an indicator.
 The existing floating panel, dog animations, pair activities, placement, auto-hide, scale, and visibility settings remain. Clicking a row runs the bounded `herdr-app do agent.focus --terminal <address>` command and activates the actual Herdr GUI bundle (`dev.herdr.app`), not a terminal emulator. Focus failures beep.
+
+## Optional: Pi background jobs
+
+In a Herdr terminal, start Pi with the adapter enabled:
+
+```sh
+pi -e /absolute/path/to/herdr-status-overlay/integrations/pi-background-overlay.mjs
+```
+
+The adapter listens to the installed `pi-background-tasks` and `pi-subagents` extensions. It publishes only aggregate counts on its own terminal, using `hc label` on changes; the overlay reads them from the existing Herdr event stream. The expanded Pi row shows counts such as `2 in background · 1 finished`. Running background jobs keep the solo work animation active even if Pi is idle, without changing the session status, agent counts, or pair activity. Clicking the row still opens the Pi session. Claude and other agents are unchanged.
+
+Enable the adapter on each machine where Pi runs. The terminal must be managed by Herdr and `hc` must be on Pi's `PATH`. The adapter does not forward commands, logs, or results.
+Finished counts cover runs observed since the adapter started in the current session, including failures and cancellations; they are not a count of successful results.
+If the subagent extension truncates its snapshot, the running count is shown as a lower bound (for example, `20+ in background`).
 
 ## Development checks
 
 ```sh
 swift run OverlaySelfCheck
+node --test scripts/check-pi-background-overlay.mjs
 swift scripts/check-overlay-launch.swift
 swift scripts/check-overlay-autostart.swift
 sh scripts/check-overlay-layout.sh

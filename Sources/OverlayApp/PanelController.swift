@@ -388,6 +388,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let sameSummary = compact && rendered.map { previous in
             previous.isEmpty == sections.isEmpty
                 && SectionView.activeCounts(in: previous) == SectionView.activeCounts(in: sections)
+                && SectionView.backgroundActivity(in: previous) == SectionView.backgroundActivity(in: sections)
                 && previous.filter(\.stale).map(\.label) == sections.filter(\.stale).map(\.label)
         } == true
         let previous = rendered
@@ -656,17 +657,19 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func addCompactSummary(_ sections: [SectionView]) {
         let counts = SectionView.activeCounts(in: sections)
+        let background = SectionView.backgroundActivity(in: sections)
         addCorgiCorner()
         let unavailable = sections.filter(\.stale).map(\.label)
         if state.autoHide {
             contentWidth = mascotSide + 16
-            if counts?.isEmpty != true {
-                addCompactBadge(counts, unavailable: unavailable)
+            if counts?.isEmpty != true || background.isVisible {
+                addCompactBadge(counts, background: background, unavailable: unavailable)
             }
             return
         }
         let card = makeCard(fillWidth: false, speechTail: true)
-        let counters = countView(counts, order: [.working, .blocked, .done], emptyText: "No active agents")
+        let counters = countView(counts, order: [.working, .blocked, .done],
+                                 emptyText: "No active agents", background: background)
         // Measure before attaching to the old panel width; stack fitting sizes can retain that width.
         let counterWidth = counters.fittingSize.width
         let button = toggleButton()
@@ -683,9 +686,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         stack.alignment = state.direction.extendsLeft ? .trailing : .leading
     }
 
-    private func addCompactBadge(_ counts: [DisplayStatus: Int]?, unavailable: [String]) {
+    private func addCompactBadge(_ counts: [DisplayStatus: Int]?, background: BackgroundActivity, unavailable: [String]) {
         guard let root = panel.contentView else { return }
-        let counters = countView(counts, order: [.working, .blocked, .done], badgeStyle: true)
+        let counters = countView(counts, order: [.working, .blocked, .done], badgeStyle: true, background: background)
         let badge = NSStackView(views: [counters])
         let width = ceil(counters.fittingSize.width) + 18
         let height: CGFloat = 26
@@ -729,8 +732,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             guard let old = previousSections[section.id], old.rows.count == section.rows.count,
                   (old.problem == nil) == (section.problem == nil) else { return true }
             return zip(old.rows, section.rows).contains { before, after in
-                (before.activity != nil && before.activity != before.label)
-                    != (after.activity != nil && after.activity != after.label)
+                (rowDetail(before) == nil) != (rowDetail(after) == nil)
             }
         }
         for (id, card) in sectionCards where !ids.contains(id) {
@@ -832,7 +834,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// Counters as colored icons with numbers; words only in the tooltip.
     private func countView(_ counts: [DisplayStatus: Int]?,
                            order: [DisplayStatus] = [.working, .blocked, .done, .idle, .unknown],
-                           emptyText: String = "no agents", badgeStyle: Bool = false) -> NSView {
+                           emptyText: String = "no agents", badgeStyle: Bool = false,
+                           background: BackgroundActivity? = nil) -> NSView {
         guard let counts else { return label("—", size: badgeStyle ? 12 : 13, secondary: true) }
         var views: [NSView] = []
         var summary: [String] = []
@@ -850,6 +853,24 @@ final class PanelController: NSObject, NSWindowDelegate {
             pair.spacing = badgeStyle ? 4 : 3
             views.append(pair)
             summary.append("\(count) \(statusName(status))")
+        }
+        if let background, background.isVisible {
+            let value = background.running == 0 ? "?" : "\(background.running)\(background.isLowerBound ? "+" : "")"
+            let description = background.running == 0 ? "Background job count incomplete" : "\(value) running in background"
+            let size: CGFloat = badgeStyle ? 9 : 12
+            let icon = NSImageView()
+            icon.image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Background jobs")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size, weight: .regular))
+            icon.contentTintColor = badgeStyle ? NSColor(srgbRed: 0.64, green: 0.80, blue: 0.91, alpha: 1) : .systemBlue
+            icon.widthAnchor.constraint(equalToConstant: size + 2).isActive = true
+            let number = label(value, size: badgeStyle ? 12 : 13)
+            if badgeStyle { number.textColor = NSColor(srgbRed: 0.98, green: 0.95, blue: 0.89, alpha: 1) }
+            let pair = NSStackView(views: [icon, number])
+            pair.alignment = .centerY
+            pair.spacing = badgeStyle ? 4 : 3
+            pair.setAccessibilityLabel(description)
+            views.append(pair)
+            summary.append(description)
         }
         guard !views.isEmpty else { return label(emptyText, size: 13, secondary: true) }
         let counters = NSStackView(views: views)
@@ -874,12 +895,25 @@ final class PanelController: NSObject, NSWindowDelegate {
         details.alignment = .leading
         details.spacing = 2
         line.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
-        if let activity = row.activity, activity != row.label {
+        if let activity = rowDetail(row) {
             addActivity(activity, to: details)
         }
         return details
     }
 
+    private func rowDetail(_ row: RowView) -> String? {
+        var parts: [String] = []
+        if let jobs = row.backgroundJobs {
+            if jobs.runningIsLowerBound {
+                parts.append(jobs.running > 0 ? "\(jobs.running)+ in background" : "Background count incomplete")
+            } else if jobs.running > 0 {
+                parts.append("\(jobs.running) in background")
+            }
+            if jobs.finished > 0 { parts.append("\(jobs.finished) finished") }
+        }
+        if let activity = row.activity, activity != row.label { parts.append(activity) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
     private func addActivity(_ activity: String, to details: ClickableRow) {
         let field = label(activity, size: 12, secondary: true)
         field.toolTip = activity
@@ -907,7 +941,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if previous?.label != row.label || previous?.place != row.place || previous?.status != row.status {
             details.toolTip = "\(row.label) · \(row.place ?? "—") — \(statusName(row.status)). Click to open."
         }
-        let activity = row.activity.flatMap { $0 == row.label ? nil : $0 }
+        let activity = rowDetail(row)
         if details.arrangedSubviews.count > 1 {
             let activityLine = details.arrangedSubviews[1] as! NSStackView
             if let activity {

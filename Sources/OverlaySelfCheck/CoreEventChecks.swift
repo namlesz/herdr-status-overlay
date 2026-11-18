@@ -61,6 +61,47 @@ func checkCoreEvents() {
         expect(try reducer.currentRecords().isEmpty, "cleared root status is omitted")
     } catch { check(false, "valid wire notifications reduce: \(error)") }
 
+    do {
+        var pi = terminal("host/t7", "idle")
+        pi["status"] = ["state": "idle", "app": "pi"]
+        var reducer = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [pi]])
+        let label = "overlay.pi-jobs"
+        let records = try reducer.apply(event(2, "labels", "host/t7", ["labels": [label: "v1:2:1"]]))!
+        let jobs = records.first?.backgroundJobs
+        expect(jobs?.running == 2 && jobs?.finished == 1, "remote Pi label is reduced to background counts")
+        var store = Store(sources: [.local(executable: "/fake")])
+        store.succeed("local", generation: 0, agents: records, now: 0)
+        let row = store.view(now: 0)[0].rows[0]
+        let freshPi = store.view(now: 0)
+        let background = SectionView.backgroundActivity(in: freshPi)
+        check(background.running == 2 && !background.isLowerBound, "compact background total is separate from idle agent status")
+        check(MascotMood.select(in: freshPi, now: 0) == .working && MascotMood.workingCount(in: freshPi) == 0,
+              "background work animates the solo mascot without scheduling pair work")
+        check(row.status == .idle && row.backgroundJobs == jobs && row.completionEventAt == nil,
+              "Pi counts do not change the agent status or celebrate completion")
+        check(store.view(now: seconds(50))[0].rows[0].backgroundJobs == nil, "stale Pi counts are hidden")
+        let stalePi = store.view(now: seconds(50))
+        check(!SectionView.backgroundActivity(in: stalePi).isVisible && MascotMood.select(in: stalePi, now: seconds(50)) == .unavailable,
+              "stale sources cannot keep the background counter or work animation active")
+
+        var seq = 2
+        seq += 1
+        let partial = try reducer.apply(event(seq, "labels", "host/t7", ["labels": [label: "v1:0+:1"]]))?.first?.backgroundJobs
+        expect(partial?.running == 0 && partial?.runningIsLowerBound == true && partial?.finished == 1,
+               "truncated Pi running counts are not presented as exact")
+        for bad in ["v2:2:1", "v1:-1:1", "v1:+1:1", "v1:65536:1", "v1:0:0", "v1:1:2:3", "", "v1::2"] {
+            seq += 1
+            let updated = try reducer.apply(event(seq, "labels", "host/t7", ["labels": [label: bad]]))
+            expect(updated?.first?.backgroundJobs == nil && updated?.first?.status == .idle, "invalid Pi count is ignored: \(bad)")
+        }
+        _ = try reducer.apply(event(seq + 1, "labels", "host/t7", ["labels": [label: "v1:1:1"]]))
+        expect(try reducer.apply(event(seq + 2, "labels", "host/t7", ["labels": [:]]))?.first?.backgroundJobs == nil,
+               "label removal clears background counts")
+        pi["status"] = ["state": "working", "app": "claude"]
+        pi["labels"] = [label: "v1:2:1"]
+        let claude = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [pi]]).currentRecords().first
+        check(claude?.backgroundJobs == nil && claude?.status == .working, "non-Pi agents ignore leftover background labels")
+    } catch { check(false, "Pi background labels reduce: \(error)") }
     for bad in [true as Any, -1, 1.5, "1"] {
         do { _ = try CoreEventReducer(snapshot: ["seq": bad, "terminals": []]); check(false, "invalid sequence rejected") }
         catch { check(true, "invalid sequence rejected") }

@@ -109,6 +109,16 @@ struct OverlayLayoutCheck {
                                        windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
         row.mouseUp(with: click)
         require(selected?.activity == "updated" && selected?.status == .done, "click uses updated row payload")
+        var pi = agent("one", "idle", "Pi")
+        pi["status"] = ["state": "idle", "app": "Pi"]
+        pi["labels"] = ["overlay.pi-jobs": "v1:2:1"]
+        try renderRows([pi])
+        require(originalRow.arrangedSubviews.count == 2 && originalActivity.stringValue == "2 in background · 1 finished",
+                "background counts appear without an activity title")
+        pi.removeValue(forKey: "labels")
+        try renderRows([pi])
+        require(originalRow.arrangedSubviews.count == 1, "clearing background counts removes detail line")
+        try renderRows([agent("one", "done", "updated"), agent("two", "idle", "second"), agent("three", "working", "third")])
         controller.render(store.view(now: seconds(50)))
         require(rows(in: root).contains { $0 === row }, "stale transition retains row identity")
         require(row.toolTip?.contains("done") == true, "stale transition preserves row status")
@@ -334,6 +344,22 @@ struct OverlayLayoutCheck {
         func containsText(_ text: String, in view: NSView) -> Bool {
             (view as? NSTextField)?.stringValue == text || view.subviews.contains { containsText(text, in: $0) }
         }
+        var backgroundPi = agent("quiet", "idle", "Pi")
+        backgroundPi["status"] = ["state": "idle", "app": "Pi"]
+        let idleDogFrame = dogFrame()
+        for (value, number) in [("v1:2:0", "2"), ("v1:3+:0", "3+"), ("v1:0+:0", "?")] {
+            backgroundPi["labels"] = ["overlay.pi-jobs": value]
+            try renderRows([backgroundPi])
+            let workBadge = badge(in: controller)
+            require(workBadge.map { containsText(number, in: $0) } == true
+                    && workBadge?.toolTip?.localizedCaseInsensitiveContains("background") == true,
+                    "idle Pi with background activity shows its own counter")
+            require(dogFrame() == idleDogFrame, "changing background counts keeps the mascot fixed")
+        }
+        backgroundPi["labels"] = ["overlay.pi-jobs": "v1:0:1"]
+        try renderRows([backgroundPi])
+        require(badge(in: controller) == nil && dogFrame() == idleDogFrame,
+                "finished-only background work leaves just the mascot")
         func textValues(in view: NSView) -> [String] {
             let own = (view as? NSTextField).map { [$0.stringValue] } ?? []
             return own + view.subviews.flatMap(textValues)

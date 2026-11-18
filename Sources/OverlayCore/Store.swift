@@ -10,6 +10,7 @@ public struct RowView: Equatable {
     public let label: String
     public let place: String?
     public let activity: String?
+    public let backgroundJobs: BackgroundJobs?
     /// Continuous-fresh completion event timestamp, retained across coalesced UI delivery.
     public let completionEventAt: UInt64?
 }
@@ -43,6 +44,24 @@ public struct SectionView: Equatable {
         }
         return counts
     }
+
+    public static func backgroundActivity(in sections: [SectionView]) -> BackgroundActivity {
+        var result = BackgroundActivity()
+        for section in sections where !section.stale {
+            for row in section.rows {
+                guard let jobs = row.backgroundJobs else { continue }
+                result.running += Int(jobs.running)
+                result.isLowerBound = result.isLowerBound || jobs.runningIsLowerBound
+            }
+        }
+        return result
+    }
+}
+
+public struct BackgroundActivity: Equatable {
+    public fileprivate(set) var running = 0
+    public fileprivate(set) var isLowerBound = false
+    public var isVisible: Bool { running > 0 || isLowerBound }
 }
 
 /// Per-source state. Not thread-safe; `OverlayModel` serializes access.
@@ -134,6 +153,7 @@ public struct Store {
                 rows.append(RowView(sourceID: source.config.id, key: agent.key, status: status,
                                     label: agent.label,
                                     place: agent.place, activity: agent.activity,
+                                    backgroundJobs: stale ? nil : agent.backgroundJobs,
                                     completionEventAt: source.tracker.completionEventAt(agent.key)))
             }
             rows.sort {

@@ -12,7 +12,7 @@ public enum MascotMood: Equatable {
             return now >= eventAt && now - eventAt < seconds(3)
         }) { return .celebrating }
         if workingCount >= 2 { return .pairWorking }
-        if workingCount > 0 { return .working }
+        if workingCount > 0 || rows.contains(where: { ($0.backgroundJobs?.running ?? 0) > 0 }) { return .working }
         return fresh.isEmpty ? .unavailable : .sleeping
     }
 

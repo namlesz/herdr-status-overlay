@@ -20,8 +20,28 @@ public struct AgentRecord {
     public let status: ServerStatus
     public let turn: UInt64?
     public let seenTurn: UInt64?
+    public let backgroundJobs: BackgroundJobs?
 }
 
+public struct BackgroundJobs: Equatable {
+    public let running: UInt16
+    public let finished: UInt16
+    public let runningIsLowerBound: Bool
+
+    init?(label: String) {
+        guard label.utf8.count <= 15 else { return nil } // v1:65535+:65535
+        let fields = label.split(separator: ":", omittingEmptySubsequences: false)
+        guard fields.count == 3, fields[0] == "v1" else { return nil }
+        let lowerBound = fields[1].last == "+"
+        let runningField = lowerBound ? fields[1].dropLast() : fields[1]
+        guard [runningField, fields[2]].allSatisfy({ $0.utf8.allSatisfy { (48...57).contains($0) } }),
+              let running = UInt16(runningField), let finished = UInt16(fields[2]),
+              lowerBound || running != 0 || finished != 0 else { return nil }
+        self.running = running
+        self.finished = finished
+        self.runningIsLowerBound = lowerBound
+    }
+}
 
 public enum ParseError: Error, Equatable { case oversized, malformed, tooManyAgents, duplicate, invalidField(String) }
 
@@ -77,9 +97,13 @@ public enum AgentListParser {
             let place = cwd.map { Text.label(($0 as NSString).lastPathComponent) }.flatMap { $0.isEmpty ? nil : $0 }
             let label = [app, kind].compactMap { $0 }.map(Text.label).first { !$0.isEmpty } ?? address
             let activity = [msg, title].compactMap { $0 }.map(Text.label).first { !$0.isEmpty }
+            let labels = terminal["labels"] as? [String: Any]
+            let backgroundJobs = (app ?? kind)?.lowercased() == "pi"
+                ? (labels?["overlay.pi-jobs"] as? String).flatMap(BackgroundJobs.init(label:)) : nil
             return AgentRecord(key: AgentKey(paneID: address), label: label, place: place,
                                activity: activity, status: mapped, turn: unsignedInteger(terminal["turn"]),
-                               seenTurn: ((terminal["labels"] as? [String: Any])?["herdr.seen"] as? String).flatMap(unsignedDecimal))
+                               seenTurn: (labels?["herdr.seen"] as? String).flatMap(unsignedDecimal),
+                               backgroundJobs: backgroundJobs)
         }
     }
 
