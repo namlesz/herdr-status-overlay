@@ -273,7 +273,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification,
                                                object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateCorgiMood),
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged),
                                                           name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
                                                           object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activeSpaceChanged),
@@ -397,6 +397,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         else if !compact, let previous {
             updateSections(sections, previous: previous)
         } else { rebuildContent() }
+    }
+
+    @objc private func accessibilityDisplayChanged() {
+        if compactBadge != nil { rebuildContent() }
+        else { updateCorgiMood() }
     }
 
     private func rebuildContent() {
@@ -690,16 +695,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard let root = panel.contentView else { return }
         let counters = countView(counts, order: [.working, .blocked, .done], badgeStyle: true, background: background)
         let badge = NSStackView(views: [counters])
-        let width = ceil(counters.fittingSize.width) + 18
-        let height: CGFloat = 26
+        let horizontalInset: CGFloat = 11.25
+        let width = ceil(counters.fittingSize.width + 2 * horizontalInset)
+        let height: CGFloat = 32.5
         badge.alignment = .centerY
-        badge.edgeInsets = NSEdgeInsets(top: 0, left: 9, bottom: 0, right: 9)
+        badge.edgeInsets = NSEdgeInsets(top: 0, left: horizontalInset, bottom: 0, right: horizontalInset)
         badge.appearance = NSAppearance(named: .darkAqua)
         badge.wantsLayer = true
         badge.layer?.cornerRadius = height / 2
         let opaque = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         badge.layer?.backgroundColor = NSColor(srgbRed: 0.075, green: 0.10, blue: 0.125,
-                                               alpha: opaque ? 1 : 0.71).cgColor
+                                               alpha: opaque ? 1 : 0.64).cgColor
         let summary = counters.toolTip ?? "Agent status unavailable"
         badge.toolTip = unavailable.isEmpty ? summary : summary + ". Unavailable: " + unavailable.joined(separator: ", ")
         badge.setAccessibilityElement(true)
@@ -836,45 +842,46 @@ final class PanelController: NSObject, NSWindowDelegate {
                            order: [DisplayStatus] = [.working, .blocked, .done, .idle, .unknown],
                            emptyText: String = "no agents", badgeStyle: Bool = false,
                            background: BackgroundActivity? = nil) -> NSView {
-        guard let counts else { return label("—", size: badgeStyle ? 12 : 13, secondary: true) }
+        guard let counts else { return label("—", size: badgeStyle ? 15 : 13, secondary: true) }
         var views: [NSView] = []
         var summary: [String] = []
         for status in order {
             guard let count = counts[status], count > 0 else { continue }
             let color = badgeStyle && status == .working
                 ? NSColor(srgbRed: 0.82, green: 0.73, blue: 0.56, alpha: 1) : statusColor(status)
-            let number = label("\(count)", size: badgeStyle ? 12 : 13)
+            let number = label("\(count)", size: badgeStyle ? 15 : 13)
             number.textColor = badgeStyle
                 ? NSColor(srgbRed: 0.98, green: 0.95, blue: 0.89, alpha: 1) : color
-            let size: CGFloat = badgeStyle ? (status == .working ? 6 : 9) : 12
-            let icon = statusIcon(status, size: size, color: color, outlinedWorking: badgeStyle)
+            let icon: NSView = badgeStyle && status == .working
+                ? workingBadgeSpinner(color: color)
+                : statusIcon(status, size: badgeStyle ? 11.25 : 12, color: color)
             let pair = NSStackView(views: [icon, number])
             pair.alignment = .centerY
-            pair.spacing = badgeStyle ? 4 : 3
+            pair.spacing = badgeStyle ? 5 : 3
             views.append(pair)
             summary.append("\(count) \(statusName(status))")
         }
         if let background, background.isVisible {
             let value = background.running == 0 ? "?" : "\(background.running)\(background.isLowerBound ? "+" : "")"
             let description = background.running == 0 ? "Background job count incomplete" : "\(value) running in background"
-            let size: CGFloat = badgeStyle ? 9 : 12
+            let size: CGFloat = badgeStyle ? 11.25 : 12
             let icon = NSImageView()
             icon.image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Background jobs")?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size, weight: .regular))
             icon.contentTintColor = badgeStyle ? NSColor(srgbRed: 0.64, green: 0.80, blue: 0.91, alpha: 1) : .systemBlue
-            icon.widthAnchor.constraint(equalToConstant: size + 2).isActive = true
-            let number = label(value, size: badgeStyle ? 12 : 13)
+            icon.widthAnchor.constraint(equalToConstant: size + (badgeStyle ? 2.5 : 2)).isActive = true
+            let number = label(value, size: badgeStyle ? 15 : 13)
             if badgeStyle { number.textColor = NSColor(srgbRed: 0.98, green: 0.95, blue: 0.89, alpha: 1) }
             let pair = NSStackView(views: [icon, number])
             pair.alignment = .centerY
-            pair.spacing = badgeStyle ? 4 : 3
+            pair.spacing = badgeStyle ? 5 : 3
             pair.setAccessibilityLabel(description)
             views.append(pair)
             summary.append(description)
         }
         guard !views.isEmpty else { return label(emptyText, size: 13, secondary: true) }
         let counters = NSStackView(views: views)
-        counters.spacing = badgeStyle ? 7 : 10
+        counters.spacing = badgeStyle ? 8.75 : 10
         counters.toolTip = summary.joined(separator: " · ")
         return counters
     }
@@ -952,10 +959,39 @@ final class PanelController: NSObject, NSWindowDelegate {
         } else if let activity { addActivity(activity, to: details) }
     }
 
-    private func statusImage(_ status: DisplayStatus, size: CGFloat, outlinedWorking: Bool = false) -> NSImage? {
+    private func workingBadgeSpinner(color: NSColor) -> NSView {
+        let size: CGFloat = 13.75
+        let icon = NSView()
+        icon.wantsLayer = true
+        icon.widthAnchor.constraint(equalToConstant: size).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: size).isActive = true
+
+        let arc = CAShapeLayer()
+        arc.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        let path = CGMutablePath()
+        path.addArc(center: CGPoint(x: size / 2, y: size / 2), radius: 5,
+                    startAngle: 0, endAngle: 1.5 * .pi, clockwise: false)
+        arc.path = path
+        arc.fillColor = nil
+        arc.strokeColor = color.cgColor
+        arc.lineWidth = 1.875
+        arc.lineCap = .round
+        icon.layer?.addSublayer(arc)
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = 0
+            spin.toValue = -2 * Double.pi
+            spin.duration = 0.85
+            spin.repeatCount = .infinity
+            arc.add(spin, forKey: "spin")
+        }
+        return icon
+    }
+
+    private func statusImage(_ status: DisplayStatus, size: CGFloat) -> NSImage? {
         let symbol: String
         switch status {
-        case .working: symbol = outlinedWorking ? "circle" : "circle.fill"
+        case .working: symbol = "circle.fill"
         case .blocked: symbol = "exclamationmark.triangle.fill"
         case .done: symbol = "checkmark.circle.fill"
         case .idle: symbol = "moon.fill"
@@ -965,10 +1001,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size, weight: .regular))
     }
 
-    private func statusIcon(_ status: DisplayStatus, size: CGFloat, color: NSColor,
-                            outlinedWorking: Bool = false) -> NSImageView {
+    private func statusIcon(_ status: DisplayStatus, size: CGFloat, color: NSColor) -> NSImageView {
         let icon = NSImageView()
-        icon.image = statusImage(status, size: size, outlinedWorking: outlinedWorking)
+        icon.image = statusImage(status, size: size)
         icon.contentTintColor = color
         icon.widthAnchor.constraint(equalToConstant: size + 2).isActive = true
         return icon

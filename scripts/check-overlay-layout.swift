@@ -245,8 +245,8 @@ struct OverlayLayoutCheck {
                         let frame = root.convert(counters.bounds, from: counters)
                         require(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame),
                                 "badge must fit panel after expansion, collapse and edge dragging")
-                        require(counters.superview === root && counters.bounds.height == 26
-                                && counters.layer?.cornerRadius == 13,
+                        require(counters.superview === root && counters.bounds.height == 32.5
+                                && counters.layer?.cornerRadius == 16.25,
                                 "badge is a compact capsule beside the dog, not a scrolling card")
                         require(!panel.isVisible, "layout test must never display the overlay")
                     }
@@ -323,6 +323,16 @@ struct OverlayLayoutCheck {
                 require(dogFrame() == before, "hiding and restoring badge keeps mascot fixed")
                 require((badge(in: controller) == nil) == (status == "idle"),
                         "idle-only auto-hide shows just corgi; active counters restore badge")
+                if let workBadge = badge(in: controller) {
+                    let workspace = NSWorkspace.shared
+                    require(workBadge.layer?.backgroundColor?.alpha == (workspace.accessibilityDisplayShouldReduceTransparency ? 1 : 0.64),
+                            "badge background respects Reduce Transparency")
+                    let counters = workBadge.arrangedSubviews.first as? NSStackView
+                    let pair = counters?.arrangedSubviews.first as? NSStackView
+                    let arc = pair?.arrangedSubviews.first?.layer?.sublayers?.first as? CAShapeLayer
+                    require(arc?.path != nil && (arc?.animation(forKey: "spin") != nil) == !workspace.accessibilityDisplayShouldReduceMotion,
+                            "working badge shows a spinner that respects Reduce Motion")
+                }
                 require(!panel.isVisible, "idle layout checks never display a window")
             }
             controller.render(store.view(now: seconds(50)))
