@@ -19,9 +19,12 @@ public enum PanelDirection: String, Codable, CaseIterable {
 /// Persisted panel preferences and top-left offset inside a screen's visible frame.
 public struct PanelState: Codable {
     public static let dogScalePercentRange = 25...300
+    public static let badgeOpacityPercentRange = 0...100
+    private static let defaultBadgeOpacityPercent = 64
 
     public var visible = true
     public var dogScalePercent = 100
+    public var badgeOpacityPercent = Self.defaultBadgeOpacityPercent
     public var minimized = false
     public var autoHide = false
     public var direction: PanelDirection = .topLeft
@@ -42,13 +45,22 @@ public struct PanelState: Codable {
         return value
     }
 
-    private enum CodingKeys: String, CodingKey { case visible, dogScalePercent, minimized, autoHide, direction, mascotAnchored, screen, left, top }
+    public static func parseBadgeOpacityPercent(_ input: String) -> Int? {
+        guard let value = Int(input.trimmingCharacters(in: .whitespacesAndNewlines)),
+              badgeOpacityPercentRange.contains(value) else { return nil }
+        return value
+    }
+
+    private enum CodingKeys: String, CodingKey { case visible, dogScalePercent, badgeOpacityPercent, minimized, autoHide, direction, mascotAnchored, screen, left, top }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         visible = try values.decodeIfPresent(Bool.self, forKey: .visible) ?? true
         let savedScale = try? values.decode(Int.self, forKey: .dogScalePercent)
         dogScalePercent = savedScale.flatMap { Self.dogScalePercentRange.contains($0) ? $0 : nil } ?? 100
+        let savedOpacity = try? values.decode(Int.self, forKey: .badgeOpacityPercent)
+        badgeOpacityPercent = savedOpacity.flatMap { Self.badgeOpacityPercentRange.contains($0) ? $0 : nil }
+            ?? Self.defaultBadgeOpacityPercent
         minimized = try values.decodeIfPresent(Bool.self, forKey: .minimized) ?? false
         autoHide = try values.decodeIfPresent(Bool.self, forKey: .autoHide) ?? false
         direction = try values.decodeIfPresent(PanelDirection.self, forKey: .direction) ?? .topLeft

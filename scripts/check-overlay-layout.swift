@@ -16,6 +16,12 @@ struct OverlayLayoutCheck {
         Mirror(reflecting: controller).children.first { $0.label == "compactBadge" }!.value as? NSStackView
     }
 
+    static func requireBadgeOpacity(_ percent: Int, on badge: NSStackView) {
+        let expected = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : CGFloat(percent) / 100
+        require(abs((badge.layer?.backgroundColor?.alpha ?? -1) - expected) < 0.001,
+                "badge background uses \(percent)% unless Reduce Transparency forces it opaque")
+    }
+
     static func main() throws {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -325,8 +331,7 @@ struct OverlayLayoutCheck {
                         "idle-only auto-hide shows just corgi; active counters restore badge")
                 if let workBadge = badge(in: controller) {
                     let workspace = NSWorkspace.shared
-                    require(workBadge.layer?.backgroundColor?.alpha == (workspace.accessibilityDisplayShouldReduceTransparency ? 1 : 0.64),
-                            "badge background respects Reduce Transparency")
+                    requireBadgeOpacity(64, on: workBadge)
                     let counters = workBadge.arrangedSubviews.first as? NSStackView
                     let pair = counters?.arrangedSubviews.first as? NSStackView
                     let arc = pair?.arrangedSubviews.first?.layer?.sublayers?.first as? CAShapeLayer
@@ -381,6 +386,33 @@ struct OverlayLayoutCheck {
         }
         try renderCompact(title: "Before")
         let unchangedBadge = badge(in: controller)!
+        for opacity in [0, 100, 37] {
+            controller.setBadgeOpacityPercent(opacity)
+            require(badge(in: controller) === unchangedBadge && unchangedBadge.alphaValue == 1,
+                    "opacity changes only the badge background without rebuilding or dimming the counters")
+            requireBadgeOpacity(opacity, on: unchangedBadge)
+        }
+        controller.setBadgeOpacityPercent(101)
+        require(controller.badgeOpacityPercent == 37, "out-of-range badge opacity leaves the preference unchanged")
+        unchangedBadge.layer?.backgroundColor = NSColor.clear.cgColor
+        let counters = unchangedBadge.arrangedSubviews.first as? NSStackView
+        let workingPair = counters?.arrangedSubviews.first as? NSStackView
+        let spinner = workingPair?.arrangedSubviews.first?.layer?.sublayers?.first as? CAShapeLayer
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if reduceMotion {
+            spinner?.add(CABasicAnimation(keyPath: "transform.rotation.z"), forKey: "spin")
+        } else {
+            spinner?.removeAnimation(forKey: "spin")
+        }
+        controller.perform(NSSelectorFromString("accessibilityDisplayChanged"))
+        require(badge(in: controller) === unchangedBadge, "display options update the existing badge")
+        requireBadgeOpacity(37, on: unchangedBadge)
+        require(spinner?.path != nil && (spinner?.animation(forKey: "spin") != nil) == !reduceMotion,
+                "display options update the existing spinner for Reduce Motion")
+        let restoredOpacity = PanelController(stateFile: url)
+        restoredOpacity.render(compactStore.view(now: now))
+        require(restoredOpacity.badgeOpacityPercent == 37, "badge opacity survives reload even with Reduce Transparency")
+        requireBadgeOpacity(37, on: badge(in: restoredOpacity)!)
         try renderCompact(title: "Latest activity")
         require(badge(in: controller) === unchangedBadge, "title-only changes must not rebuild the badge")
         try renderCompact(title: "Latest activity", status: "working", publish: false)

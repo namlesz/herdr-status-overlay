@@ -238,6 +238,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var rowViews: [String: [AgentKey: ClickableRow]] = [:]
     private let corgi = CorgiView(frame: NSRect(x: 0, y: 0, width: CorgiView.side, height: CorgiView.side))
     private var compactBadge: NSStackView?
+    private weak var compactBadgeSpinner: CAShapeLayer?
     private var animationTimer: Timer?
     private var celebrationTimer: Timer?
     private var hover = AutoHideHover()
@@ -319,6 +320,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         saveState()
     }
 
+    var badgeOpacityPercent: Int { state.badgeOpacityPercent }
+
+    func setBadgeOpacityPercent(_ percent: Int) {
+        guard PanelState.badgeOpacityPercentRange.contains(percent), percent != state.badgeOpacityPercent else { return }
+        state.badgeOpacityPercent = percent
+        updateCompactBadgeBackground()
+        saveState()
+    }
 
     func setAutoHide(_ enabled: Bool) {
         state.autoHide = enabled
@@ -400,8 +409,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     @objc private func accessibilityDisplayChanged() {
-        if compactBadge != nil { rebuildContent() }
-        else { updateCorgiMood() }
+        updateCompactBadgeBackground()
+        updateCompactBadgeSpinner()
+        updateCorgiMood()
     }
 
     private func rebuildContent() {
@@ -409,6 +419,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         rowViews.removeAll()
         compactBadge?.removeFromSuperview()
         compactBadge = nil
+        compactBadgeSpinner = nil
         // Removed rows and buttons never get mouseExited, so drop a hand left over from them.
         NSCursor.arrow.set()
         let sections = rendered ?? []
@@ -691,6 +702,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         stack.alignment = state.direction.extendsLeft ? .trailing : .leading
     }
 
+    private func updateCompactBadgeBackground() {
+        guard let layer = compactBadge?.layer else { return }
+        let alpha = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : CGFloat(badgeOpacityPercent) / 100
+        layer.backgroundColor = NSColor(srgbRed: 0.075, green: 0.10, blue: 0.125, alpha: alpha).cgColor
+    }
+
     private func addCompactBadge(_ counts: [DisplayStatus: Int]?, background: BackgroundActivity, unavailable: [String]) {
         guard let root = panel.contentView else { return }
         let counters = countView(counts, order: [.working, .blocked, .done], badgeStyle: true, background: background)
@@ -703,9 +720,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         badge.appearance = NSAppearance(named: .darkAqua)
         badge.wantsLayer = true
         badge.layer?.cornerRadius = height / 2
-        let opaque = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        badge.layer?.backgroundColor = NSColor(srgbRed: 0.075, green: 0.10, blue: 0.125,
-                                               alpha: opaque ? 1 : 0.64).cgColor
         let summary = counters.toolTip ?? "Agent status unavailable"
         badge.toolTip = unavailable.isEmpty ? summary : summary + ". Unavailable: " + unavailable.joined(separator: ", ")
         badge.setAccessibilityElement(true)
@@ -714,6 +728,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         badge.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(badge, positioned: .above, relativeTo: corgi)
         compactBadge = badge
+        updateCompactBadgeBackground()
 
         let gap: CGFloat = 6
         NSLayoutConstraint.activate([
@@ -977,7 +992,16 @@ final class PanelController: NSObject, NSWindowDelegate {
         arc.lineWidth = 1.875
         arc.lineCap = .round
         icon.layer?.addSublayer(arc)
-        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        compactBadgeSpinner = arc
+        updateCompactBadgeSpinner()
+        return icon
+    }
+
+    private func updateCompactBadgeSpinner() {
+        guard let arc = compactBadgeSpinner else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            arc.removeAnimation(forKey: "spin")
+        } else if arc.animation(forKey: "spin") == nil {
             let spin = CABasicAnimation(keyPath: "transform.rotation.z")
             spin.fromValue = 0
             spin.toValue = -2 * Double.pi
@@ -985,7 +1009,6 @@ final class PanelController: NSObject, NSWindowDelegate {
             spin.repeatCount = .infinity
             arc.add(spin, forKey: "spin")
         }
-        return icon
     }
 
     private func statusImage(_ status: DisplayStatus, size: CGFloat) -> NSImage? {

@@ -14,6 +14,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var toggleItem: NSMenuItem?
     private var autoHideItem: NSMenuItem?
     private var dogScaleItem: NSMenuItem?
+    private var badgeOpacityItem: NSMenuItem?
     private var timer: Timer?
     private var stopping = false
     private let focusQueue = DispatchQueue(label: "overlay.focus")
@@ -122,6 +123,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         dogScale.target = self
         menu.addItem(dogScale)
         dogScaleItem = dogScale
+        let badgeOpacity = NSMenuItem(title: "Badge opacity: \(panel.badgeOpacityPercent)%…", action: #selector(changeBadgeOpacity), keyEquivalent: "")
+        badgeOpacity.target = self
+        menu.addItem(badgeOpacity)
+        badgeOpacityItem = badgeOpacity
         let position = NSMenuItem(title: "Panel position", action: nil, keyEquivalent: "")
         let positions = NSMenu()
         for direction in PanelDirection.allCases {
@@ -181,6 +186,32 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         panel.setDogScalePercent(percent)
         dogScaleItem?.title = "Dog scale: \(panel.dogScalePercent)%…"
+    }
+
+    @objc private func changeBadgeOpacity() {
+        let field = NSTextField(string: "\(panel.badgeOpacityPercent)")
+        field.setAccessibilityLabel("Badge opacity percentage")
+        field.placeholderString = "0–100"
+        field.frame = NSRect(x: 0, y: 0, width: 180, height: 24)
+        let alert = NSAlert()
+        alert.messageText = "Badge opacity"
+        alert.informativeText = "Enter a whole-number percentage from 0 to 100. Reduce Transparency keeps the badge background opaque."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let percent = PanelState.parseBadgeOpacityPercent(field.stringValue) else {
+            let error = NSAlert()
+            error.messageText = "Invalid badge opacity"
+            error.informativeText = "Enter a whole number from 0 to 100. The opacity was not changed."
+            error.addButton(withTitle: "OK")
+            error.runModal()
+            return
+        }
+        panel.setBadgeOpacityPercent(percent)
+        badgeOpacityItem?.title = "Badge opacity: \(panel.badgeOpacityPercent)%…"
     }
 
     @objc private func selectDirection(_ sender: NSMenuItem) {

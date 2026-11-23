@@ -343,6 +343,22 @@ do {
     for invalid in ["", "abc", "100.5", "24", "301"] {
         check(PanelState.parseDogScalePercent(invalid) == nil, "dog scale rejects invalid input \(invalid)")
     }
+    check(state.badgeOpacityPercent == 64, "legacy panel state defaults badge opacity to 64 percent")
+    for (input, expected) in [("0", 0), (" 37\n", 37), ("100", 100)] {
+        check(PanelState.parseBadgeOpacityPercent(input) == expected, "badge opacity parses \(expected) percent")
+        state.badgeOpacityPercent = expected
+        let decoded = try! JSONDecoder().decode(PanelState.self, from: JSONEncoder().encode(state))
+        check(decoded.badgeOpacityPercent == expected, "badge opacity \(expected) percent round-trips")
+    }
+    for invalid in ["", "abc", "50%", "10.5", "-1", "101"] {
+        check(PanelState.parseBadgeOpacityPercent(invalid) == nil, "badge opacity rejects invalid input \(invalid)")
+    }
+    for invalid in ["-1", "101", #""37""#, "37.5", "null", "true"] {
+        let data = Data(#"{"visible":false,"badgeOpacityPercent":\#(invalid)}"#.utf8)
+        let decoded = try! JSONDecoder().decode(PanelState.self, from: data)
+        check(decoded.badgeOpacityPercent == 64 && !decoded.visible,
+              "invalid saved badge opacity falls back to 64 percent without losing other preferences")
+    }
     check(state.screen == 7 && state.left == 42 && state.top == 18, "legacy panel placement survives migration")
     check(state.direction == .topLeft && !state.mascotAnchored, "legacy panel direction and placement format default safely")
     state.mascotAnchored = true
