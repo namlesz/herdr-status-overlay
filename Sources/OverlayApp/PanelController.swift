@@ -243,6 +243,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var celebrationTimer: Timer?
     private var hover = AutoHideHover()
     private var hoverTimer: Timer?
+    private var idleHideTimer: Timer?
+    private var idleHidden = false
     private var hoverMonitors: [Any] = []
     private var compact: Bool { state.showsCompact(hovered: hover.expanded) }
     private var mood: MascotMood?
@@ -284,6 +286,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     deinit {
         hoverTimer?.invalidate()
+        idleHideTimer?.invalidate()
         animationTimer?.invalidate()
         celebrationTimer?.invalidate()
         hoverMonitors.forEach { NSEvent.removeMonitor($0) }
@@ -357,6 +360,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self?.updateHover()
             }
         }
+        updateVisibility()
     }
 
     private func updateHoverMonitoring() {
@@ -406,6 +410,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         else if !compact, let previous {
             updateSections(sections, previous: previous)
         } else { rebuildContent() }
+        updateVisibility()
     }
 
     @objc private func accessibilityDisplayChanged() {
@@ -439,8 +444,24 @@ final class PanelController: NSObject, NSWindowDelegate {
         updateVisibility()
     }
 
-    private func updateVisibility() {
-        let visible = state.visible && !(rendered ?? []).isEmpty
+    private func updateVisibility(idleTimerElapsed: Bool = false) {
+        let sections = rendered ?? []
+        let canIdleHide = state.visible && state.autoHide && !hover.expanded
+            && (!panel.isVisible || !panel.frame.contains(NSEvent.mouseLocation))
+            && SectionView.isQuiet(sections)
+        if !canIdleHide {
+            idleHideTimer?.invalidate()
+            idleHideTimer = nil
+            idleHidden = false
+        } else if idleTimerElapsed {
+            idleHidden = true
+        } else if !idleHidden && idleHideTimer == nil {
+            idleHideTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+                self?.idleHideTimer = nil
+                self?.updateVisibility(idleTimerElapsed: true)
+            }
+        }
+        let visible = state.visible && !sections.isEmpty && !idleHidden
         if visible == panel.isVisible { return }
         if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
         updateHoverMonitoring()

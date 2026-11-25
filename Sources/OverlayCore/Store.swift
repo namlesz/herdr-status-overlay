@@ -29,6 +29,11 @@ public struct SectionView: Equatable {
     /// Every agent as a row: blocked, working, finished, unknown, then idle; each group by place, name and key.
     public let rows: [RowView]
 
+    public static func isQuiet(_ sections: [SectionView]) -> Bool {
+        !sections.isEmpty && sections.allSatisfy { section in
+            !section.stale && section.rows.allSatisfy { $0.status == .idle }
+        } && !backgroundActivity(in: sections).isVisible
+    }
 
     /// Compact counters include only fresh sources; nil means no usable data, not zero agents.
     public static func activeCounts(in sections: [SectionView]) -> [DisplayStatus: Int]? {

@@ -83,12 +83,31 @@ func checkCoreEvents() {
         let stalePi = store.view(now: seconds(50))
         check(!SectionView.backgroundActivity(in: stalePi).isVisible && MascotMood.select(in: stalePi, now: seconds(50)) == .unavailable,
               "stale sources cannot keep the background counter or work animation active")
+        check(!SectionView.isQuiet(freshPi) && !SectionView.isQuiet(stalePi),
+              "running Pi jobs and stale snapshots both prevent idle hiding")
 
         var seq = 2
         seq += 1
         let partial = try reducer.apply(event(seq, "labels", "host/t7", ["labels": [label: "v1:0+:1"]]))?.first?.backgroundJobs
         expect(partial?.running == 0 && partial?.runningIsLowerBound == true && partial?.finished == 1,
                "truncated Pi running counts are not presented as exact")
+        for (state, labels, quiet) in [
+            ("idle", ["herdr.seen": "1", label: "v1:0:1"], true),
+            ("done", ["herdr.seen": "1"], true),
+            ("idle", ["herdr.seen": "0"], false),
+            ("idle", ["herdr.seen": "1", label: "v1:0+:1"], false),
+            ("working", ["herdr.seen": "1"], false),
+            ("blocked", ["herdr.seen": "1"], false),
+            ("future-state", ["herdr.seen": "1"], false),
+        ] {
+            var candidate = pi
+            candidate["status"] = ["state": state, "app": "pi"]
+            candidate["turn"] = 1
+            candidate["labels"] = labels
+            let agents = try CoreEventReducer(snapshot: ["seq": 1, "terminals": [candidate]]).currentRecords()
+            store.succeed("local", generation: 0, agents: agents, now: 0)
+            check(SectionView.isQuiet(store.view(now: 0)) == quiet, "idle hiding eligibility: \(state), \(labels)")
+        }
         for bad in ["v2:2:1", "v1:-1:1", "v1:+1:1", "v1:65536:1", "v1:0:0", "v1:1:2:3", "", "v1::2"] {
             seq += 1
             let updated = try reducer.apply(event(seq, "labels", "host/t7", ["labels": [label: bad]]))
