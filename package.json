@@ -1,0 +1,7 @@
+{
+  "name": "herdr-status-overlay",
+  "private": true,
+  "pi": {
+    "extensions": ["./integrations/pi-background-overlay.mjs"]
+  }
+}
