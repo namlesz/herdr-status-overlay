@@ -13,6 +13,7 @@ Each `*-sheet.png` is a 1024×1024 green-screen image with four 512×512 cells i
 
 - `pair-chase`, `pair-tug`, `pair-fetch`, `pair-wrestle`, `pair-hop`, `pair-dig`, `pair-splash`, `pair-steal`: shared two-dog scenes (each four frames).
 - `pair-enter`, `pair-exit`: second dog entering and leaving (each four frames).
+- `stairs-climb`, `stairs-descend`: four complete dog-and-staircase drawings per direction, based on `stairs-reference.png`. The preparation script aligns the stair edges across all eight frames.
 
 The second dog appears when at least two fresh agents are working and leaves when the count falls below two. Completion celebration remains after the exit; STOP interrupts immediately. Pair activity sheets use one shared crop and scale of their own so the original solo PNGs remain byte-identical when regenerated.
 Regenerate transparent 512×512 frames from the repository root:

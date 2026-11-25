@@ -24,6 +24,21 @@ struct OverlayLayoutCheck {
 
     static func main() throws {
         _ = NSApplication.shared
+        let climb = AutoHideStairs.leaving
+        let descent = AutoHideStairs.returning
+        require(climb.duration > descent.duration, "Auto-hide climbs more slowly than it descends")
+        for stairs in AutoHideStairs.allCases {
+            let sequence = (0..<4).map { stairs.frameIndex(at: (CGFloat($0) + 0.5) / 4) }
+            require(sequence == [0, 1, 2, 3], "play all four staircase scenes once in drawing order")
+            require(stairs.frameIndex(at: 1) == 3, "hold the last scene at the end of the transition")
+        }
+        let stairFrames = try AutoHideStairs.allCases.flatMap(\.frameNames).map { name in
+            guard let url = Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "Corgi") else {
+                throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: name + ".png"])
+            }
+            return try Data(contentsOf: url)
+        }
+        require(Set(stairFrames).count == 8, "climb and descent have eight distinct bundled drawings")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -20,21 +20,35 @@ private final class HoverTrackingView: NSView {
 }
 /// Illustrated dog frames, decoded once from the bundled PNGs.
 private enum CorgiArt {
-    static let frames: [MascotFrame: NSImage] = {
-        var frames: [MascotFrame: NSImage] = [:]
+    static let frames = Dictionary(uniqueKeysWithValues: MascotFrame.allCases.compactMap { frame in
+        load(frame.resourceName).map { (frame, $0) }
+    })
+    static let stairs = Dictionary(uniqueKeysWithValues: AutoHideStairs.allCases.flatMap(\.frameNames).compactMap { name in
+        load(name).map { (name, $0) }
+    })
+
+    private static func load(_ name: String) -> NSImage? {
         let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
-        for frame in MascotFrame.allCases {
-            guard let url = Bundle.module.url(forResource: frame.resourceName, withExtension: "png",
-                                              subdirectory: "Corgi"),
-                  let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, options) else {
-                NSLog("Herdr Status Overlay: missing dog frame %@", frame.resourceName)
-                continue
-            }
-            frames[frame] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        guard let url = Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "Corgi"),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, options) else {
+            NSLog("Herdr Status Overlay: missing dog frame %@", name)
+            return nil
         }
-        return frames
-    }()
+        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+    }
+}
+
+enum AutoHideStairs: CaseIterable {
+    case leaving, returning
+
+    var duration: TimeInterval { self == .leaving ? 1.2 : 0.48 }
+    var frameNames: [String] {
+        let direction = self == .leaving ? "climb" : "descend"
+        return (0..<4).map { "stairs-\(direction)-\($0)" }
+    }
+
+    func frameIndex(at progress: CGFloat) -> Int { min(3, Int(progress * 4)) }
 }
 
 private final class CorgiView: NSView {
@@ -43,6 +57,8 @@ private final class CorgiView: NSView {
     private var lift: CGFloat = 0
 
     private var sleepPhases: [Double] = []
+    var stairs: AutoHideStairs? { didSet { needsDisplay = true } }
+    var stairsProgress: CGFloat = 0 { didSet { needsDisplay = true } }
 
     func show(_ art: MascotFrame, lift: CGFloat, sleepPhases: [Double]) {
         guard art != self.art || lift != self.lift || sleepPhases != self.sleepPhases else { return }
@@ -58,6 +74,11 @@ private final class CorgiView: NSView {
         guard scale > 0 else { return }
         context.saveGState()
         context.scaleBy(x: scale, y: scale)
+        defer { context.restoreGState() }
+        if let stairs {
+            drawStairs(stairs)
+            return
+        }
         // Inset so the highest hop (5 pt) still fits inside the view.
         CorgiArt.frames[art]?.draw(in: NSRect(x: 3, y: 1 + lift, width: Self.side - 6, height: Self.side - 6))
         for phase in sleepPhases {
@@ -72,7 +93,17 @@ private final class CorgiView: NSView {
                                                                               alpha: sin(p * .pi)),
                                                     .shadow: shadow])
         }
-        context.restoreGState()
+    }
+
+    private func drawStairs(_ stairs: AutoHideStairs) {
+        let climb = stairs == .leaving ? stairsProgress : 1 - stairsProgress
+        let blend = min(1, climb * 8)
+        let sceneOpacity = blend * min(1, (1 - climb) * 8)
+        let rect = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
+        CorgiArt.frames[art]?.draw(in: rect.insetBy(dx: 3, dy: 3), from: .zero,
+                                  operation: .sourceOver, fraction: 1 - blend)
+        let frame = stairs.frameNames[stairs.frameIndex(at: stairsProgress)]
+        CorgiArt.stairs[frame]?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: sceneOpacity)
     }
 }
 
@@ -245,6 +276,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var hoverTimer: Timer?
     private var idleHideTimer: Timer?
     private var idleHidden = false
+    private var stairsTimer: Timer?
     private var hoverMonitors: [Any] = []
     private var compact: Bool { state.showsCompact(hovered: hover.expanded) }
     private var mood: MascotMood?
@@ -287,6 +319,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     deinit {
         hoverTimer?.invalidate()
         idleHideTimer?.invalidate()
+        stairsTimer?.invalidate()
         animationTimer?.invalidate()
         celebrationTimer?.invalidate()
         hoverMonitors.forEach { NSEvent.removeMonitor($0) }
@@ -417,6 +450,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         updateCompactBadgeBackground()
         updateCompactBadgeSpinner()
         updateCorgiMood()
+        updateVisibility()
     }
 
     private func rebuildContent() {
@@ -446,6 +480,9 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func updateVisibility(idleTimerElapsed: Bool = false) {
         let sections = rendered ?? []
+        let wasIdleHidden = idleHidden
+        let canAnimate = state.visible && state.autoHide && !sections.isEmpty
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let canIdleHide = state.visible && state.autoHide && !hover.expanded
             && (!panel.isVisible || !panel.frame.contains(NSEvent.mouseLocation))
             && SectionView.isQuiet(sections)
@@ -461,12 +498,49 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self?.updateVisibility(idleTimerElapsed: true)
             }
         }
+        if corgi.stairs == .leaving && canAnimate && idleHidden { return }
+        if canAnimate && idleHidden && idleTimerElapsed && panel.isVisible {
+            startStairs(.leaving)
+            return
+        }
         let visible = state.visible && !sections.isEmpty && !idleHidden
+        if !canAnimate || !visible || corgi.stairs == .leaving { stopStairs() }
         if visible == panel.isVisible { return }
-        if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
+        if visible {
+            if canAnimate && wasIdleHidden { startStairs(.returning) }
+            panel.orderFrontRegardless()
+        } else {
+            panel.orderOut(nil)
+        }
         updateHoverMonitoring()
         if !visible { hover = AutoHideHover(); rebuildContent() }
         updateCorgiMood()
+    }
+
+    private func startStairs(_ stairs: AutoHideStairs) {
+        stopStairs()
+        corgi.stairs = stairs
+        let start = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let progress = (ProcessInfo.processInfo.systemUptime - start) / stairs.duration
+            if progress >= 1 {
+                self.stopStairs()
+                self.updateVisibility()
+            } else {
+                self.corgi.stairsProgress = CGFloat(progress)
+            }
+        }
+        stairsTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopStairs() {
+        guard stairsTimer != nil else { return }
+        stairsTimer?.invalidate()
+        stairsTimer = nil
+        corgi.stairs = nil
+        corgi.stairsProgress = 0
     }
 
     // MARK: Panel setup

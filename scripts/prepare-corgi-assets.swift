@@ -160,6 +160,30 @@ for (index, group) in pairGroups.enumerated() {
     }
 }
 
+// Register the complete scenes on the stair edges, not the moving dog's bounding box.
+// Landmarks are measured in each source cell, from its upper-left corner.
+let stairsLandmarks: [(direction: String, cells: [(left: Double, right: Double, top: Double, base: Double)])] = [
+    ("climb", [(40, 506, 233, 506), (36, 506, 233, 506), (37, 506, 201, 485), (36, 506, 201, 485)]),
+    ("descend", [(48, 508, 249, 508), (48, 508, 249, 508), (36, 508, 232, 508), (36, 508, 232, 508)]),
+]
+for scene in stairsLandmarks {
+    let pixels = rgba(load("stairs-\(scene.direction)-sheet"))
+    for (index, cellEdges) in scene.cells.enumerated() {
+        let frame = key(pixels, column: index % 2, row: index / 2)
+        let scaleX = 440 / (cellEdges.right - cellEdges.left)
+        let scaleY = 259 / (cellEdges.base - cellEdges.top)
+        let target = context(width: canvas, height: canvas)
+        target.draw(image(frame.pixels, width: cell, height: cell), in: CGRect(
+            x: 47 - cellEdges.left * scaleX,
+            y: 28 - (Double(cell) - cellEdges.base) * scaleY,
+            width: Double(cell) * scaleX, height: Double(cell) * scaleY))
+        let name = "stairs-\(scene.direction)-\(index)"
+        let result = target.makeImage()!
+        write(result, to: output.appendingPathComponent(name + ".png"))
+        frames.append((name, result))
+    }
+}
+
 
 // Verification: alpha present, transparent perimeter, no visible green left.
 for (name, frame) in frames {
